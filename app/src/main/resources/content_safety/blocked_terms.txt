@@ -1,0 +1,150 @@
+# Локальная проверка запросов на рисование.
+# Единственная цель — не генерировать сексуализированные изображения несовершеннолетних (CSAM).
+# Других фильтров в приложении нет.
+#
+# Синтаксис (как у голосовых команд): "слово" — целое слово или фраза, "основа*" — слово с такой основой.
+# Текст сравнивается после нормализации: нижний регистр, ё→е, без знаков препинания.
+#
+# Запрос отклоняется, если:
+#   1) в нём есть термин из [always], или
+#   2) есть и термин из [minor] (или возраст младше 18: «12 лет», "12 year old"), и термин из [sexual].
+
+[always]
+csam
+child porn*
+childporn*
+kiddie porn*
+kiddy porn*
+pedo*
+paedo*
+loli
+lolis
+lolicon
+shota
+shotacon
+jailbait
+cp porn*
+детское порно
+детская порнография
+детской порнографии
+педофил*
+лоли
+лоликон
+шота
+шотакон
+
+[minor]
+child
+children
+childs
+kid
+kids
+kiddie*
+baby
+babies
+toddler*
+infant*
+minor
+minors
+underage*
+under age
+preteen*
+pre teen*
+tween*
+teen
+teens
+teenage*
+young girl*
+young boy*
+little girl*
+little boy*
+schoolgirl*
+schoolboy*
+school girl*
+school boy*
+girl child
+boy child
+daughter*
+son
+юн*
+ребен*
+детей
+дети
+детьми
+детям
+детск*
+малыш*
+младен*
+малолет*
+несовершеннолет*
+подрост*
+школьни*
+девочк*
+мальчик*
+мальчиш*
+девчонк*
+доч*
+сын
+сына
+сыну
+сыном
+
+[sexual]
+sex*
+porn*
+nude*
+nudity
+naked
+nsfw
+erotic*
+explicit
+topless
+bottomless
+lewd*
+genital*
+penis*
+vagina*
+undress*
+lingerie
+underwear
+panties
+bikini
+hentai
+orgasm*
+masturbat*
+intercourse
+fetish*
+seductive
+sensual*
+xxx
+спаривани*
+секс*
+порн*
+голая
+голый
+голые
+голую
+голым
+голой
+голенькая
+голенький
+голеньк*
+обнажен*
+наг*
+нагишом
+эрот*
+раздет*
+раздева*
+интим*
+хентай
+нижнем белье
+нижнее белье
+белье
+трусик*
+купальник*
+бикини
+оргазм*
+мастурб*
+половой акт
+соблазн*
+фетиш*

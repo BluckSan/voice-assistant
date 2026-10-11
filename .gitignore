@@ -1,0 +1,43 @@
+# Gradle / Kotlin
+.gradle/
+build/
+*/build/
+.kotlin/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+app/.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Сборки и подписи
+*.apk
+*.aab
+*.ap_
+*.idsig
+*.jks
+*.keystore
+output-metadata.json
+
+# Нативные объекты
+*.so
+*.o
+*.a
+obj/
+libs/
+
+# Модели (большие, скачиваются отдельно)
+models/
+*.gguf
+*.safetensors
+*.onnx
+*.ckpt
+*.bin
+*.part
+# Vosk для full: scripts/download_models.sh
+app/src/full/assets/model-ru/
+app/src/full/assets/model-en/

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Голосовой ассистент RU/EN</string>
+    <string name="channel_assistant">Ассистент</string>
+    <string name="action_stop">Стоп</string>
+    <string name="status_loading">Загружаю модели RU/EN…</string>
+    <string name="status_waiting">Жду «ассистент» / “assistant”</string>
+    <string name="status_listening">Слушаю команду…</string>
+    <string name="status_processing">Думаю…</string>
+    <string name="status_speaking">Отвечаю</string>
+    <string name="status_error">Ошибка</string>
+    <string name="status_stopped">Выключен</string>
+</resources>

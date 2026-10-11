@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Голосовые модели уже внутри APK. Интернет нужен только если пользователь сам нажмёт
+         «Скачать модель» на экране «Рисование» (~2 ГБ, один раз). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
