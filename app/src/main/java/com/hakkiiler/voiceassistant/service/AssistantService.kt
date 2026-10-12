@@ -112,7 +112,7 @@ class AssistantService : Service(), BilingualSpeechEngine.Listener {
         updateNotification(e.message ?: "error")
     }
 
-    override fun onUtterance(hypotheses: List<Hypothesis>) {
+    override fun onUtterance(hypotheses: List<Hypothesis>, audio: ShortArray) {
         val status = c.state.value.status
         if (status == AssistantStatus.SPEAKING || status == AssistantStatus.PROCESSING) return
         val wakeWords = c.settings.settings.value.wakeWords
@@ -124,7 +124,7 @@ class AssistantService : Service(), BilingualSpeechEngine.Listener {
             val sel = c.languageSelector.select(hyps, mode, lastLanguage) ?: return
             val hit = hyps.firstOrNull { it.language == sel.language }?.let { WakeWordDetector.find(it, wakeWords) }
             val text = hit?.remainder ?: sel.text
-            if (text.isBlank()) activate(sel.language) else handleCommand(text, sel.language, sel.score)
+            if (text.isBlank()) activate(sel.language) else handleCommand(text, sel.language, sel.score, audio)
             return
         }
 
@@ -139,7 +139,7 @@ class AssistantService : Service(), BilingualSpeechEngine.Listener {
             // «ассистент открой телеграм» — выбираем язык по остатку фразы
             val remainders = withCommand.map { h -> Hypothesis(h.hypothesis.language, h.remainder, h.hypothesis.words) }
             val sel = c.languageSelector.select(remainders, mode, lastLanguage) ?: return
-            handleCommand(sel.text, sel.language, sel.score)
+            handleCommand(sel.text, sel.language, sel.score, audio)
         } else {
             val sel = c.languageSelector.select(hits.map { it.hypothesis }, mode, lastLanguage)
             activate(sel?.language ?: hits.first().hypothesis.language)
@@ -152,16 +152,47 @@ class AssistantService : Service(), BilingualSpeechEngine.Listener {
         speak(Reply(Replies(l).listening, l, keepListening = true))
     }
 
-    private fun handleCommand(text: String, lang: Language, score: Double) {
+    private fun handleCommand(voskText: String, voskLang: Language, score: Double, audio: ShortArray? = null) {
         timeoutJob?.cancel()
-        lastLanguage = lang
         c.state.value = c.state.value.copy(
-            status = AssistantStatus.PROCESSING, partialText = text, lastLanguage = lang, lastConfidence = score.toFloat(),
+            status = AssistantStatus.PROCESSING, partialText = voskText, lastLanguage = voskLang, lastConfidence = score.toFloat(),
         )
+        updateNotification(statusText(AssistantStatus.PROCESSING))
         scope.launch {
+            var text = voskText
+            var lang = voskLang
+            // Whisper переслушивает всю фразу: понимает русские и английские слова вперемешку
+            if (audio != null && c.ai.whisperReady) {
+                val forced = mode.forcedLanguage()
+                val w = runCatching { c.ai.transcribe(audio, forced ?: voskLang) }
+                    .onFailure { Log.w(TAG, "whisper", it) }.getOrNull()
+                if (w != null) {
+                    val hit = WakeWordDetector.find(Hypothesis(w.first, w.second, emptyList()), c.settings.settings.value.wakeWords)
+                    val cleaned = hit?.let { stripWake(w.second, it.wakeWord) } ?: w.second
+                    if (cleaned.isNotBlank()) {
+                        text = cleaned
+                        lang = forced ?: w.first
+                    }
+                }
+                c.state.value = c.state.value.copy(partialText = text, lastLanguage = lang)
+            }
+            lastLanguage = lang
             val reply = c.process(text, lang)
             speak(reply)
         }
+    }
+
+    /** «Ассистент, поставь reminder» → «поставь reminder» (с сохранением регистра и латиницы). */
+    private fun stripWake(text: String, wake: String): String {
+        val words = text.split(Regex("\\s+"))
+        val n = wake.split(' ').size
+        val idx = words.indices.firstOrNull { i ->
+            i + n <= words.size && WakeWordDetector.tokenMatches(
+                words.subList(i, i + n).joinToString(" ") { it.lowercase().trim(',', '.', '!', '?') }, wake.lowercase(),
+            )
+        } ?: return text
+        val rest = (words.take(idx) + words.drop(idx + n)).joinToString(" ").trim(',', '.', ' ', '!')
+        return rest
     }
 
     private fun speak(reply: Reply) {

@@ -57,6 +57,7 @@ import com.hakkiiler.voiceassistant.ui.components.ChatBubble
 import com.hakkiiler.voiceassistant.ui.components.EmptyState
 import com.hakkiiler.voiceassistant.ui.components.MicButton
 import com.hakkiiler.voiceassistant.ui.components.PartialBubble
+import com.hakkiiler.voiceassistant.ui.components.StreamingBubble
 import com.hakkiiler.voiceassistant.ui.components.ScreenHeader
 import com.hakkiiler.voiceassistant.ui.components.StatusPill
 import com.hakkiiler.voiceassistant.ui.components.Waveform
@@ -69,13 +70,15 @@ fun AssistantScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     val chat by vm.chat.collectAsStateWithLifecycle()
     val level by vm.micLevel.collectAsStateWithLifecycle()
+    val llm by vm.ai.llm.collectAsStateWithLifecycle()
+    val streaming = llm.loading || llm.streaming != null
     val list = rememberLazyListState()
     var input by rememberSaveable { mutableStateOf("") }
     val listening = state.status == AssistantStatus.LISTENING
     val showPartial = listening || state.partialText.isNotBlank()
 
-    LaunchedEffect(chat.size, showPartial) {
-        val last = chat.size + (if (showPartial) 1 else 0) - 1
+    LaunchedEffect(chat.size, showPartial, streaming, llm.streaming?.length?.div(40)) {
+        val last = chat.size + (if (showPartial) 1 else 0) + (if (streaming) 1 else 0) - 1
         if (last >= 0) list.animateScrollToItem(last)
     }
 
@@ -135,7 +138,8 @@ fun AssistantScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
                 }
             }
             items(chat, key = { it.id }) { ChatBubble(it) }
-            if (showPartial) item(key = "partial") { PartialBubble(state.partialText) }
+            if (showPartial && !streaming) item(key = "partial") { PartialBubble(state.partialText) }
+            if (streaming) item(key = "streaming") { StreamingBubble(llm.streaming.orEmpty(), llm.loading) { vm.ai.cancelChat() } }
         }
 
         AnimatedVisibility(listening, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {

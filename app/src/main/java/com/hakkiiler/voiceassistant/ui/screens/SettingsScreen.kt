@@ -53,6 +53,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hakkiiler.voiceassistant.BuildConfig
 import com.hakkiiler.voiceassistant.R
 import com.hakkiiler.voiceassistant.data.image.ImageModelSource
+import com.hakkiiler.voiceassistant.data.ai.AiModel
+import com.hakkiiler.voiceassistant.data.ai.AiModelSource
 import com.hakkiiler.voiceassistant.data.stt.ModelSource
 import com.hakkiiler.voiceassistant.domain.model.Language
 import com.hakkiiler.voiceassistant.domain.model.LanguageMode
@@ -131,6 +133,18 @@ fun SettingsScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
             dl.error?.let { Banner(it, title = stringResource(R.string.download_failed), tone = BannerTone.Error) }
             val missing = s.languageMode.forcedLanguage()?.let { listOf(it) } ?: Language.entries
             if (missing.any { it !in installed }) Banner(stringResource(R.string.settings_mode_missing), tone = BannerTone.Warning)
+        }
+
+        // ---- нейросети: Whisper и собеседник ----
+        SectionCard(
+            title = stringResource(R.string.ai_section),
+            icon = painterResource(R.drawable.ic_sparkle),
+            subtitle = stringResource(R.string.ai_section_hint),
+        ) {
+            vm.ai.unsupportedReason?.let { Banner(it, tone = BannerTone.Warning) }
+            AiModelRow(vm, AiModel.WHISPER, stringResource(R.string.ai_whisper_desc))
+            HorizontalDivider()
+            AiModelRow(vm, AiModel.LLM, stringResource(R.string.ai_llm_desc))
         }
 
         // ---- слова-активаторы ----
@@ -224,9 +238,42 @@ fun SettingsScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
             Text(stringResource(R.string.app_name) + " " + BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodyLarge)
             Hint(stringResource(R.string.settings_privacy))
             Text(stringResource(R.string.settings_credits), style = MaterialTheme.typography.titleSmall)
-            (listOf("Vosk — Alpha Cephei, Apache-2.0") + ImageModelSource.credits).forEach { Hint("• $it") }
+            (listOf("Vosk — Alpha Cephei, Apache-2.0") + AiModelSource.credits + ImageModelSource.credits).forEach { Hint("• $it") }
         }
     }
+}
+
+@Composable
+private fun AiModelRow(vm: AssistantViewModel, m: AiModel, description: String) {
+    val st by vm.ai.state(m).collectAsStateWithLifecycle()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            if (st.installed) Icons.Filled.CheckCircle else Icons.Filled.Warning, null,
+            tint = if (st.installed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.size(Spacing.s))
+        Column(Modifier.weight(1f)) {
+            Text(m.title, style = MaterialTheme.typography.bodyLarge)
+            Hint(description)
+            Hint(
+                if (st.installed) stringResource(R.string.ai_installed, m.file.bytes / 1_000_000)
+                else stringResource(R.string.ai_size, m.file.bytes / 1_000_000),
+            )
+        }
+        when {
+            st.running -> TextButton(onClick = { vm.ai.cancelDownload(m) }) { Text(stringResource(R.string.action_cancel)) }
+            st.installed -> TextButton(onClick = { vm.ai.delete(m) }) { Text(stringResource(R.string.action_delete)) }
+            vm.ai.unsupportedReason == null -> FilledTonalButton(onClick = { vm.ai.download(m) }) {
+                Text(stringResource(if (st.downloadedBytes > 0) R.string.ai_resume else R.string.action_download))
+            }
+        }
+    }
+    if (st.running) {
+        LinearProgressIndicator(progress = { st.progress }, modifier = Modifier.fillMaxWidth())
+        Hint("${st.downloadedBytes / 1_000_000} / ${st.totalBytes / 1_000_000} МБ · ${(st.progress * 100).toInt()}%")
+    }
+    st.error?.let { Banner(it, title = stringResource(R.string.download_failed), tone = BannerTone.Error) }
 }
 
 @Composable

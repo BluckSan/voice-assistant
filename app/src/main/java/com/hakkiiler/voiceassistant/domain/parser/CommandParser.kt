@@ -37,6 +37,9 @@ class CommandParser(private val now: () -> LocalDateTime = { LocalDateTime.now()
         if (has(k.eventCreate)) return parseCreateEvent(text, lang)
         if (has(k.eventQuery) && !has(k.musicWord)) return VoiceCommand.QueryEvents(parseRange(text, lang))
 
+        // таймер: «поставь таймер на пять минут», "set a timer for 30 seconds"
+        parseTimer(text)?.let { return it }
+
         // 3. время и дата
         if (has(k.time)) return VoiceCommand.TellTime
         if (has(k.date)) return VoiceCommand.TellDate
@@ -112,6 +115,37 @@ class CommandParser(private val now: () -> LocalDateTime = { LocalDateTime.now()
         if (has(k.stop) && text.split(' ').size <= 2) return VoiceCommand.Stop
 
         return VoiceCommand.Unknown(rawText)
+    }
+
+    /** Таймер: число + единица (секунды/минуты/часы), «полчаса», без числа — «на минуту». */
+    fun parseTimer(text: String): VoiceCommand.SetTimer? {
+        if (!Text.hasAny(text, listOf("таймер*", "timer*"))) return null
+        val tokens = Text.tokens(text)
+        var total = 0L
+        var i = 0
+        while (i < tokens.size) {
+            val t = tokens[i]
+            if (t == "полчаса" || t == "полчасика") { total += 1800; i++; continue }
+            val num = NumberWords.parseAt(tokens, i)
+            if (num != null) {
+                val mult = tokens.getOrNull(i + num.second)?.let { unitSeconds(it) }
+                if (mult != null) { total += num.first * mult; i += num.second + 1; continue }
+                i += num.second
+                continue
+            }
+            // «таймер на минуту» — единица без числа
+            unitSeconds(t)?.let { total += it }
+            i++
+        }
+        if (total <= 0) return null
+        return VoiceCommand.SetTimer(total.toInt(), null)
+    }
+
+    private fun unitSeconds(w: String): Long? = when {
+        w.startsWith("сек") || w.startsWith("second") || w == "sec" || w == "secs" -> 1L
+        w.startsWith("минут") || w == "мин" || w.startsWith("minute") || w == "min" || w == "mins" -> 60L
+        w == "час" || w == "часа" || w == "часов" || w.startsWith("hour") -> 3600L
+        else -> null
     }
 
     /**

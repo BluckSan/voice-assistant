@@ -155,4 +155,14 @@
     <string name="draw_save_failed">Could not save</string>
     <string name="draw_share_failed">Could not share</string>
     <string name="draw_no_permission">Storage permission denied</string>
+    <string name="ai_section">Neural networks</string>
+    <string name="ai_section_hint">Run right on the phone, offline</string>
+    <string name="ai_whisper_desc">Understands Russian and English words in one sentence</string>
+    <string name="ai_llm_desc">Chat partner: answers questions, chats and understands commands in your own words</string>
+    <string name="ai_size">Download ≈ %1$d MB</string>
+    <string name="ai_installed">Installed · %1$d MB</string>
+    <string name="ai_resume">Resume</string>
+    <string name="ai_thinking">Thinking…</string>
+    <string name="ai_loading_model">Loading the model into memory…</string>
+    <string name="action_stop_answer">Stop</string>
 </resources>

@@ -49,3 +49,60 @@ target_link_options(sdjni PRIVATE
     -Wl,--gc-sections
     -Wl,--exclude-libs,ALL
     -Wl,-z,max-page-size=16384)   # Android 15+: страницы 16 КБ
+
+# ---------------- whisper.cpp (распознавание смешанной RU/EN речи) и llama.cpp (чат-нейросеть) ----------------
+# У каждого свой ggml другой версии, поэтому собираем их отдельными CMake-проектами в статические
+# библиотеки и прячем символы внутри своей .so (--exclude-libs,ALL) — конфликтов с ggml из sd.cpp нет.
+include(ExternalProject)
+
+set(EXT_COMMON_ARGS
+    -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+    -DANDROID_ABI=${ANDROID_ABI}
+    -DANDROID_PLATFORM=${ANDROID_PLATFORM}
+    -DANDROID_STL=c++_static
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -DBUILD_SHARED_LIBS=OFF
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+    "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections"
+    "-DCMAKE_CXX_FLAGS=-ffunction-sections -fdata-sections"
+    -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_LLAMAFILE=ON
+    -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF
+    -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm+fp16)
+
+set(WHISPER_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/whisper-install)
+ExternalProject_Add(whisper_ext
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/whisper.cpp
+    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/whisper-build
+    INSTALL_DIR ${WHISPER_PREFIX}
+    CMAKE_ARGS ${EXT_COMMON_ARGS} -DCMAKE_INSTALL_PREFIX=${WHISPER_PREFIX} -DCMAKE_INSTALL_LIBDIR=lib
+        -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_SERVER=OFF -DWHISPER_SDL2=OFF
+    BUILD_BYPRODUCTS ${WHISPER_PREFIX}/lib/libwhisper.a ${WHISPER_PREFIX}/lib/libggml.a
+        ${WHISPER_PREFIX}/lib/libggml-cpu.a ${WHISPER_PREFIX}/lib/libggml-base.a)
+
+set(LLAMA_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/llama-install)
+ExternalProject_Add(llama_ext
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp
+    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/llama-build
+    INSTALL_DIR ${LLAMA_PREFIX}
+    CMAKE_ARGS ${EXT_COMMON_ARGS} -DCMAKE_INSTALL_PREFIX=${LLAMA_PREFIX} -DCMAKE_INSTALL_LIBDIR=lib
+        -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF
+        -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_HTML=OFF -DLLAMA_BUILD_IS_DEV=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF
+    BUILD_BYPRODUCTS ${LLAMA_PREFIX}/lib/libllama.a ${LLAMA_PREFIX}/lib/libggml.a
+        ${LLAMA_PREFIX}/lib/libggml-cpu.a ${LLAMA_PREFIX}/lib/libggml-base.a)
+
+add_library(whisperjni SHARED whisperjni.cpp)
+add_dependencies(whisperjni whisper_ext)
+target_include_directories(whisperjni PRIVATE ${WHISPER_PREFIX}/include)
+target_link_libraries(whisperjni PRIVATE
+    ${WHISPER_PREFIX}/lib/libwhisper.a ${WHISPER_PREFIX}/lib/libggml.a
+    ${WHISPER_PREFIX}/lib/libggml-cpu.a ${WHISPER_PREFIX}/lib/libggml-base.a log android m)
+target_link_options(whisperjni PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,-z,max-page-size=16384)
+
+add_library(llamajni SHARED llamajni.cpp)
+add_dependencies(llamajni llama_ext)
+target_include_directories(llamajni PRIVATE ${LLAMA_PREFIX}/include)
+target_link_libraries(llamajni PRIVATE
+    ${LLAMA_PREFIX}/lib/libllama.a ${LLAMA_PREFIX}/lib/libggml.a
+    ${LLAMA_PREFIX}/lib/libggml-cpu.a ${LLAMA_PREFIX}/lib/libggml-base.a log android m)
+target_link_options(llamajni PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,-z,max-page-size=16384)

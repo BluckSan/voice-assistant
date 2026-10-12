@@ -133,4 +133,19 @@ class Replies(private val lang: Language) {
         private val HM = DateTimeFormatter.ofPattern("HH:mm")
         private val H12 = DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.US)
     }
+
+    fun timer(seconds: Int, ok: Boolean): String {
+        if (!ok) return t("Не получилось поставить таймер: нет приложения «Часы».", "Couldn't set a timer: no clock app.")
+        val m = seconds / 60
+        val sec = seconds % 60
+        return if (lang == Language.RU) {
+            "Таймер на " + listOfNotNull(
+                if (m > 0) "$m мин" else null, if (sec > 0) "$sec сек" else null,
+            ).joinToString(" ") + " запущен."
+        } else {
+            "Timer set for " + listOfNotNull(
+                if (m > 0) "$m min" else null, if (sec > 0) "$sec sec" else null,
+            ).joinToString(" ") + "."
+        }
+    }
 }

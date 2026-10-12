@@ -83,3 +83,43 @@ fun PartialBubble(text: String) {
         }
     }
 }
+
+/** Ответ нейросети, который печатается прямо сейчас (потоково), с кнопкой «Стоп». */
+@Composable
+fun StreamingBubble(text: String, loading: Boolean, onStop: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        IconBadge(painterResource(R.drawable.ic_sparkle), size = 30)
+        Spacer(Modifier.size(8.dp))
+        Surface(
+            shape = RoundedCornerShape(20.dp, 20.dp, 20.dp, 6.dp),
+            color = colors.surfaceContainerHigh,
+            contentColor = colors.onSurface,
+            modifier = Modifier.widthIn(max = 290.dp),
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                Text(
+                    when {
+                        loading -> stringResource(R.string.ai_loading_model)
+                        text.isBlank() -> stringResource(R.string.ai_thinking)
+                        else -> "$text ▍"
+                    },
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontStyle = if (loading || text.isBlank()) FontStyle.Italic else FontStyle.Normal,
+                    ),
+                )
+                if (!loading) {
+                    androidx.compose.material3.TextButton(
+                        onClick = onStop,
+                        modifier = Modifier.align(Alignment.End),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) { Text(stringResource(R.string.action_stop_answer), style = MaterialTheme.typography.labelMedium) }
+                }
+            }
+        }
+    }
+}

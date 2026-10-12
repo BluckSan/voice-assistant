@@ -9,6 +9,11 @@ import com.hakkiiler.voiceassistant.data.repository.CommandRepository
 import com.hakkiiler.voiceassistant.data.repository.EventRepository
 import com.hakkiiler.voiceassistant.data.repository.SettingsRepository
 import com.hakkiiler.voiceassistant.data.image.DrawController
+import com.hakkiiler.voiceassistant.data.ai.AiController
+import com.hakkiiler.voiceassistant.data.ai.HeavyModelGuard
+import com.hakkiiler.voiceassistant.domain.llm.ChatPrompt
+import com.hakkiiler.voiceassistant.domain.llm.ToolCalls
+import com.hakkiiler.voiceassistant.domain.model.VoiceCommand
 import com.hakkiiler.voiceassistant.data.stt.ModelDownloadController
 import com.hakkiiler.voiceassistant.data.stt.VoskModelManager
 import com.hakkiiler.voiceassistant.data.system.ReminderManager
@@ -46,6 +51,13 @@ class AppContainer(context: Context) {
     val voice by lazy { AssistantVoice(app) }
     /** Рисование: Realistic Vision V6 + LCM, генерация, загрузка (data/image). */
     val draw = DrawController(app, appScope)
+    /** Whisper (смешанная речь) и локальная нейросеть для разговора (data/ai). */
+    val ai = AiController(app, appScope)
+
+    init {
+        HeavyModelGuard.unloadChat = { ai.unloadAll() }
+        HeavyModelGuard.releaseDraw = { draw.releaseForOtherModel() }
+    }
 
     /** Состояние ассистента, общее для сервиса, оверлея и UI. */
     val state = MutableStateFlow(AssistantState())
@@ -73,12 +85,34 @@ class AppContainer(context: Context) {
 
     /** Выполняет фразу (голосом или текстом), пишет обе реплики в историю чата. */
     suspend fun process(text: String, lang: Language): Reply = mutex.withLock {
-        chat.add(ChatMessage(UUID.randomUUID().toString(), text, fromUser = true, language = lang, timestamp = System.currentTimeMillis()))
-        val reply = runCatching { useCase.execute(text, lang) }.getOrElse { e ->
+        val userMsg = ChatMessage(UUID.randomUUID().toString(), text, fromUser = true, language = lang, timestamp = System.currentTimeMillis())
+        chat.add(userMsg)
+        val reply = runCatching { route(text, lang, userMsg) }.getOrElse { e ->
             Reply(if (lang == Language.RU) "Ошибка: ${e.message}" else "Error: ${e.message}", lang)
         }
         chat.add(ChatMessage(UUID.randomUUID().toString(), reply.text, fromUser = false, language = reply.language, timestamp = System.currentTimeMillis()))
         reply
+    }
+
+    /**
+     * Сначала быстрые правила (открыть, громкость, таймер…), для смешанной фразы — оба языка.
+     * Всё, что правила не поняли, и разговоры — локальной нейросети; её JSON-вызов инструмента выполняем как команду.
+     */
+    private suspend fun route(text: String, lang: Language, userMsg: ChatMessage): Reply {
+        if (useCase.inDialog || useCase.hasCustomCommand(text)) return useCase.execute(text, lang)
+        val primary = ChatPrompt.languageOf(text, lang)
+        val other = if (primary == Language.RU) Language.EN else Language.RU
+        val cmd = useCase.parse(text, primary)
+        val actionable = cmd !is VoiceCommand.Unknown && cmd !is VoiceCommand.Chat
+        if (actionable) return useCase.execute(text, primary)
+        val alt = useCase.parse(text, other)
+        if (alt !is VoiceCommand.Unknown && alt !is VoiceCommand.Chat) return useCase.executeCommand(alt, text, primary)
+        if (!ai.llmReady) return useCase.execute(text, primary)
+
+        val answer = ai.chat(chat.items.value.filterNot { it.id == userMsg.id } + userMsg)
+        ToolCalls.parse(answer)?.let { return useCase.executeCommand(it, text, primary) }
+        val spoken = ChatPrompt.forSpeech(answer).ifBlank { return useCase.execute(text, primary) }
+        return Reply(spoken, ChatPrompt.languageOf(spoken, primary))
     }
 
     companion object {

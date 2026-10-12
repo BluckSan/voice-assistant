@@ -263,6 +263,8 @@ class DrawController(
         _state.update { it.copy(phase = DrawPhase.LoadingModel, startedAt = System.currentTimeMillis()) }
         drawJob = scope.launch {
             try {
+                // нейросеть-собеседник и Whisper выгружаем: вместе с SD они не влезут в память
+                com.hakkiiler.voiceassistant.data.ai.HeavyModelGuard.beforeDraw()
                 val result = withContext(nativeDispatcher) {
                     val plan = planFor(f, size, steps)
                     ensureMemory(plan)
@@ -453,6 +455,18 @@ class DrawController(
             if (!_state.value.running) withContext(nativeDispatcher) { freeContext() }
         }
     }
+
+    /**
+     * Освободить модель рисования для LLM. @return false, если сейчас идёт рисование (тогда LLM грузить нельзя).
+     */
+    suspend fun releaseForOtherModel(): Boolean {
+        if (_state.value.running) return false
+        releaseJob?.cancel()
+        withContext(nativeDispatcher) { freeContext() }
+        return true
+    }
+
+    val isDrawing: Boolean get() = _state.value.running
 
     /** Из Application.onTrimMemory: система просит память — выгружаем модель, если не рисуем. */
     fun onTrimMemory(level: Int) {

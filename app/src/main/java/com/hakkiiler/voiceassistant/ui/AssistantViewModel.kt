@@ -96,6 +96,8 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- рисование ----
     val draw = c.draw
+    /** Whisper + нейросеть-собеседник. */
+    val ai = c.ai
 
     // ---- настройки ----
     fun setLanguageMode(m: LanguageMode) = viewModelScope.launch { c.settings.setLanguageMode(m) }

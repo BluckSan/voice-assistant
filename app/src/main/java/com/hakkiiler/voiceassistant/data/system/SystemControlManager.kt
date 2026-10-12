@@ -101,6 +101,13 @@ class SystemControlManager(private val context: Context) : DeviceController {
         return start(intent)
     }
 
+    override fun setTimer(seconds: Int, label: String?): Boolean = start(
+        Intent(android.provider.AlarmClock.ACTION_SET_TIMER)
+            .putExtra(android.provider.AlarmClock.EXTRA_LENGTH, seconds)
+            .putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            .apply { if (!label.isNullOrBlank()) putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label) },
+    )
+
     private fun start(intent: Intent): Boolean = try {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(intent)

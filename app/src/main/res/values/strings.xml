@@ -155,4 +155,14 @@
     <string name="draw_save_failed">Не удалось сохранить</string>
     <string name="draw_share_failed">Не удалось поделиться</string>
     <string name="draw_no_permission">Нет разрешения на запись</string>
+    <string name="ai_section">Нейросети</string>
+    <string name="ai_section_hint">Работают прямо на телефоне, без интернета</string>
+    <string name="ai_whisper_desc">Распознаёт русские и английские слова в одной фразе («поставь reminder на завтра»)</string>
+    <string name="ai_llm_desc">Собеседник: отвечает на вопросы, болтает и понимает команды своими словами</string>
+    <string name="ai_size">Скачать ≈ %1$d МБ</string>
+    <string name="ai_installed">Установлено · %1$d МБ</string>
+    <string name="ai_resume">Продолжить</string>
+    <string name="ai_thinking">Думаю…</string>
+    <string name="ai_loading_model">Загружаю нейросеть в память…</string>
+    <string name="action_stop_answer">Стоп</string>
 </resources>

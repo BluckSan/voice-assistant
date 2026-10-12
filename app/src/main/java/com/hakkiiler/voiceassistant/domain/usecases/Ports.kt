@@ -20,6 +20,8 @@ interface DeviceController {
     fun mediaPlayPause(play: Boolean)
     fun mediaSkip(next: Boolean)
     fun openApp(packageName: String): Boolean
+    /** Таймер через системное приложение «Часы». */
+    fun setTimer(seconds: Int, label: String?): Boolean = false
     fun launchableApps(): List<AppInfo>
 }
 

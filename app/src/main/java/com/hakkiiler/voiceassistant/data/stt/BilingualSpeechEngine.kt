@@ -25,7 +25,8 @@ class BilingualSpeechEngine {
 
     interface Listener {
         fun onPartial(text: String)
-        fun onUtterance(hypotheses: List<Hypothesis>)
+        /** @param audio PCM 16 кГц всей фразы — для повторного распознавания Whisper (смешанная речь). */
+        fun onUtterance(hypotheses: List<Hypothesis>, audio: ShortArray)
         fun onError(e: Throwable)
     }
 
@@ -66,6 +67,7 @@ class BilingualSpeechEngine {
             val buf = ByteArray(CHUNK)
             var wasMuted = false
             var lastPartial = ""
+            val audio = java.io.ByteArrayOutputStream()
             while (running) {
                 val n = recorder.read(buf, 0, buf.size)
                 if (n <= 0) continue
@@ -73,7 +75,14 @@ class BilingualSpeechEngine {
                 level.value = rmsLevel(buf, n)
                 if (wasMuted) {
                     recognizers.values.forEach { it.reset() }
+                    audio.reset()
                     wasMuted = false
+                }
+                audio.write(buf, 0, n)
+                if (audio.size() > MAX_AUDIO_BYTES) {
+                    // долгая тишина/шум без конца фразы — оставляем последние секунды
+                    val tail = audio.toByteArray().let { it.copyOfRange(it.size - KEEP_AUDIO_BYTES, it.size) }
+                    audio.reset(); audio.write(tail)
                 }
                 val ended = recognizers.filter { (_, r) -> r.acceptWaveForm(buf, n) }.keys
                 if (ended.isNotEmpty()) {
@@ -81,7 +90,9 @@ class BilingualSpeechEngine {
                         parse(lang, if (lang in ended) r.result else r.finalResult)
                     }
                     lastPartial = ""
-                    if (hyps.any { !it.isBlank }) main.post { listener.onUtterance(hyps) }
+                    val pcm = toShorts(audio.toByteArray())
+                    audio.reset()
+                    if (hyps.any { !it.isBlank }) main.post { listener.onUtterance(hyps, pcm) }
                 } else {
                     // для интерфейса показываем самую длинную частичную гипотезу
                     val partial = recognizers.values
@@ -126,6 +137,13 @@ class BilingualSpeechEngine {
             return ((db + 60) / 60).toFloat().coerceIn(0f, 1f)
         }
         const val SAMPLE_RATE = 16000
+        /** Не больше 30 с звука на фразу (Whisper всё равно берёт окно 30 с). */
+        private const val MAX_AUDIO_BYTES = SAMPLE_RATE * 2 * 30
+        private const val KEEP_AUDIO_BYTES = SAMPLE_RATE * 2 * 10
+
+        fun toShorts(b: ByteArray): ShortArray = ShortArray(b.size / 2) { i ->
+            ((b[2 * i + 1].toInt() shl 8) or (b[2 * i].toInt() and 0xFF)).toShort()
+        }
         /** 4096 байт = 2048 сэмплов ≈ 128 мс. */
         private const val CHUNK = 4096
 

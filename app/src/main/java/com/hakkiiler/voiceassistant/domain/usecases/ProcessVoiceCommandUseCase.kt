@@ -78,6 +78,17 @@ class ProcessVoiceCommandUseCase(
         }
     }
 
+    /** Выполнить уже разобранную команду (например, вызов инструмента от нейросети). */
+    suspend fun executeCommand(cmd: VoiceCommand, text: String, lang: Language): Reply = remember(text, lang, handle(cmd, lang))
+
+    fun hasCustomCommand(text: String): Boolean {
+        val normalized = Text.normalize(text)
+        return commands.currentCommands().any { c -> c.triggers.any { Text.normalize(it) == normalized } }
+    }
+
+    /** Разбор правилами без выполнения: Unknown/Chat отдаём нейросети. */
+    fun parse(text: String, lang: Language): VoiceCommand = parser.parse(text, lang)
+
     private fun remember(text: String, lang: Language, reply: Reply): Reply {
         if (session == null) lastCommand = text to lang
         return reply
@@ -128,6 +139,7 @@ class ProcessVoiceCommandUseCase(
             }
 
             is VoiceCommand.OpenApp -> say(openApp(cmd.name, r))
+            is VoiceCommand.SetTimer -> say(r.timer(cmd.seconds, device.setTimer(cmd.seconds, cmd.label)))
             is VoiceCommand.Draw -> say(draw(cmd.prompt, r))
             is VoiceCommand.Chat -> say(
                 when (cmd.kind) {

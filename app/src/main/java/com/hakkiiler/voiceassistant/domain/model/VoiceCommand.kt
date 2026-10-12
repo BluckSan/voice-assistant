@@ -43,6 +43,8 @@ sealed interface VoiceCommand {
     data class QueryEvents(val range: EventRange) : VoiceCommand
 
     data class OpenApp(val name: String) : VoiceCommand
+    /** Таймер в системных «Часах». */
+    data class SetTimer(val seconds: Int, val label: String?) : VoiceCommand
     /** «нарисуй …» / "draw …"; prompt == null — просто открыть экран рисования. */
     data class Draw(val prompt: String?) : VoiceCommand
     data class Chat(val kind: SmallTalk) : VoiceCommand
