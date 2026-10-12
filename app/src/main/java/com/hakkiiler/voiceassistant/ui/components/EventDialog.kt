@@ -22,6 +22,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.hakkiiler.voiceassistant.R
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.hakkiiler.voiceassistant.domain.model.Event
@@ -52,17 +54,17 @@ fun EventDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (initial == null) "Новое событие" else "Событие") },
+        title = { Text(stringResource(if (initial == null) R.string.event_new else R.string.event_edit)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(title, { title = it }, label = { Text("Название") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(title, { title = it }, label = { Text(stringResource(R.string.event_title)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { pickDate = true }) { Text(date.format(DateTimeFormatter.ofPattern("dd.MM.yyyy"))) }
                     OutlinedButton(onClick = { pickTime = true }) { Text(time.format(DateTimeFormatter.ofPattern("HH:mm"))) }
                 }
                 OutlinedTextField(
                     reminder, { reminder = it.filter(Char::isDigit) },
-                    label = { Text("Напомнить за, мин") }, singleLine = true,
+                    label = { Text(stringResource(R.string.event_remind)) }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
             }
@@ -71,9 +73,9 @@ fun EventDialog(
             TextButton(onClick = {
                 val ts = LocalDateTime.of(date, time).atZone(zone).toInstant().toEpochMilli()
                 onSave(title, ts, reminder.toIntOrNull() ?: 0)
-            }) { Text("Сохранить") }
+            }) { Text(stringResource(R.string.action_save)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 
     if (pickDate) {

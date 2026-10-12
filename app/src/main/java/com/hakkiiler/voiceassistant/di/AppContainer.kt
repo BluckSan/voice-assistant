@@ -44,7 +44,7 @@ class AppContainer(context: Context) {
     val modelDownloads = ModelDownloadController(models, appScope)
     val languageSelector by lazy { LanguageSelector() }
     val voice by lazy { AssistantVoice(app) }
-    /** Рисование: модель SD-Turbo, генерация, загрузка (data/image). */
+    /** Рисование: Realistic Vision V6 + LCM, генерация, загрузка (data/image). */
     val draw = DrawController(app, appScope)
 
     /** Состояние ассистента, общее для сервиса, оверлея и UI. */

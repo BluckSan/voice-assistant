@@ -15,12 +15,15 @@ import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
 
 /**
- * Скачивает модель рисования (~2 ГБ) по тому же принципу, что и [com.hakkiiler.voiceassistant.data.stt.ModelDownloader]:
+ * Скачивает модели рисования (~1.9 ГБ) по тому же принципу, что и [com.hakkiiler.voiceassistant.data.stt.ModelDownloader]:
  * HttpURLConnection, файл .part, проверка отмены на каждом блоке, прогресс в байтах, атомарное переименование.
- * Дополнительно, потому что файл большой:
+ * Дополнительно, потому что файлы большие:
  * - докачка с места обрыва (HTTP Range), .part лежит в filesDir и переживает перезапуск;
  * - до 4 автоматических попыток с паузой при сетевых ошибках;
  * - проверка SHA-256 (считается на лету) и свободного места до начала загрузки.
+ *
+ * После загрузки LCM-LoRA вливается в модель ([DrawController] вызывает nativeMergeLora),
+ * и в папке остаются только [ImageModelSource.MERGED_FILE] + TAESD (+ апскейлер, если скачан).
  */
 class ImageModelDownloader(private val filesDir: File) {
 
@@ -28,17 +31,40 @@ class ImageModelDownloader(private val filesDir: File) {
 
     fun file(f: ImageModelFile) = File(dir, f.fileName)
     private fun part(f: ImageModelFile) = File(dir, f.fileName + ".part")
+    val mergedFile: File get() = File(dir, ImageModelSource.MERGED_FILE)
+    val mergeTmp: File get() = File(dir, ImageModelSource.MERGED_FILE + ".tmp")
 
     fun isInstalled(f: ImageModelFile) = file(f).let { it.isFile && it.length() == f.bytes }
-    fun allInstalled() = ImageModelSource.all.all { isInstalled(it) }
+    fun isMerged() = mergedFile.isFile && mergedFile.length() > ImageModelSource.MERGED_BYTES / 2
+    /** Готово к рисованию: модель с влитой LCM-LoRA и TAESD на месте. */
+    fun allInstalled() = isMerged() && isInstalled(ImageModelSource.TAESD)
+    fun upscalerInstalled() = isInstalled(ImageModelSource.UPSCALER)
+    /** Скачаны исходники, но слияние ещё не сделано (например, приложение закрыли посередине). */
+    fun needsMerge() = !isMerged() && isInstalled(ImageModelSource.BASE) && isInstalled(ImageModelSource.LCM_LORA)
+
+    private fun pending(): List<ImageModelFile> = buildList {
+        if (!isMerged()) { add(ImageModelSource.BASE); add(ImageModelSource.LCM_LORA) }
+        add(ImageModelSource.TAESD)
+    }
 
     /** Уже скачанные байты (включая недокачанные .part) — для прогресса и «Продолжить». */
-    fun downloadedBytes(): Long = ImageModelSource.all.sumOf { f ->
-        when {
-            isInstalled(f) -> f.bytes
-            part(f).isFile -> minOf(part(f).length(), f.bytes)
-            else -> 0L
-        }
+    fun downloadedBytes(): Long = if (isMerged()) {
+        ImageModelSource.requiredBytes - ImageModelSource.TAESD.bytes + progressOf(ImageModelSource.TAESD)
+    } else {
+        ImageModelSource.required.sumOf { progressOf(it) }
+    }
+
+    private fun progressOf(f: ImageModelFile) = when {
+        isInstalled(f) -> f.bytes
+        part(f).isFile -> minOf(part(f).length(), f.bytes)
+        else -> 0L
+    }
+
+    /** Файлы прошлых версий (старая модель из версии 1.0) — удаляем, чтобы не занимали 2 ГБ. */
+    fun removeStale() {
+        val known = (ImageModelSource.required + ImageModelSource.UPSCALER).flatMap { listOf(it.fileName, it.fileName + ".part") }
+            .toSet() + ImageModelSource.MERGED_FILE
+        dir.listFiles()?.forEach { if (it.name !in known) it.deleteRecursively() }
     }
 
     /**
@@ -46,21 +72,49 @@ class ImageModelDownloader(private val filesDir: File) {
      */
     suspend fun downloadAll(onProgress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
         dir.mkdirs()
-        val need = ImageModelSource.all.filterNot { isInstalled(it) }.sumOf { it.bytes - (part(it).takeIf { p -> p.isFile }?.length() ?: 0L) }
+        removeStale()
+        val files = pending()
+        val need = files.filterNot { isInstalled(it) }.sumOf { it.bytes - (part(it).takeIf { p -> p.isFile }?.length() ?: 0L) } +
+            (if (isMerged()) 0L else ImageModelSource.MERGED_BYTES) // слияние пишет ещё одну копию модели
+        ensureSpace(need)
+        val total = ImageModelSource.requiredBytes
+        var doneBefore = total - files.sumOf { it.bytes }
+        for (f in files) {
+            if (!isInstalled(f)) {
+                val base = doneBefore
+                downloadWithRetry(f) { done -> onProgress(base + done, total) }
+            }
+            doneBefore += f.bytes
+            onProgress(doneBefore, total)
+        }
+    }
+
+    /** Апскейлер RealESRGAN (64 МБ) — по желанию, отдельной кнопкой. */
+    suspend fun downloadUpscaler(onProgress: (Long, Long) -> Unit) = withContext(Dispatchers.IO) {
+        dir.mkdirs()
+        val f = ImageModelSource.UPSCALER
+        if (isInstalled(f)) return@withContext
+        ensureSpace(f.bytes)
+        downloadWithRetry(f) { done -> onProgress(done, f.bytes) }
+        onProgress(f.bytes, f.bytes)
+    }
+
+    private fun ensureSpace(need: Long) {
         val free = StatFs(dir.path).availableBytes
         if (free < need + RESERVE_BYTES) {
             throw IOException(
                 "Недостаточно места: нужно ещё ${mb(need + RESERVE_BYTES)} МБ, свободно ${mb(free)} МБ / Not enough storage",
             )
         }
-        var doneBefore = 0L
-        for (f in ImageModelSource.all) {
-            if (!isInstalled(f)) {
-                downloadWithRetry(f) { done -> onProgress(doneBefore + done, ImageModelSource.totalBytes) }
-            }
-            doneBefore += f.bytes
-            onProgress(doneBefore, ImageModelSource.totalBytes)
-        }
+    }
+
+    /** После успешного слияния исходники больше не нужны. */
+    fun finishMerge(): Boolean {
+        if (!mergeTmp.isFile || mergeTmp.length() < ImageModelSource.MERGED_BYTES / 2) return false
+        if (!mergeTmp.renameTo(mergedFile)) return false
+        file(ImageModelSource.BASE).delete()
+        file(ImageModelSource.LCM_LORA).delete()
+        return true
     }
 
     private suspend fun downloadWithRetry(f: ImageModelFile, onProgress: (Long) -> Unit) {
@@ -147,6 +201,11 @@ class ImageModelDownloader(private val filesDir: File) {
 
     fun deleteAll() {
         dir.deleteRecursively()
+    }
+
+    fun deleteUpscaler() {
+        file(ImageModelSource.UPSCALER).delete()
+        part(ImageModelSource.UPSCALER).delete()
     }
 
     class ChecksumException(name: String) : IOException("Файл $name повреждён (не совпала контрольная сумма), скачай заново")

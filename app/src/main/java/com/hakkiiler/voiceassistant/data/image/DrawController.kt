@@ -4,12 +4,14 @@ import android.app.ActivityManager
 import android.content.ComponentCallbacks2
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.hakkiiler.voiceassistant.domain.image.ContentSafety
 import com.hakkiiler.voiceassistant.domain.image.PromptTranslator
 import com.hakkiiler.voiceassistant.domain.usecases.DrawLauncher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
@@ -18,54 +20,80 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.Executors
 import kotlin.random.Random
 
 /** Параметры генерации — они же содержимое формы на экране «Рисование». */
 data class DrawForm(
     val prompt: String = "",
-    val negativePrompt: String = "",
-    val steps: Int = 4,
-    val size: Int = 512,
-    /** 1.0 — без CFG (так задумана SD-Turbo); больше 1 — включает негативный запрос, но шаг вдвое дольше. */
-    val cfg: Float = 1.0f,
+    val negativePrompt: String = DrawPresets.DEFAULT_NEGATIVE,
+    val steps: Int = DrawPresets.DEFAULT_STEPS,
+    val size: DrawSize = DrawPresets.DEFAULT_SIZE,
+    /** 1.0 — без CFG (так рассчитана LCM); больше 1 — включает негативный запрос, но шаг вдвое дольше. */
+    val cfg: Float = DrawPresets.DEFAULT_CFG,
     /** -1 — случайный. */
     val seed: Long = -1,
-    val fastDecoder: Boolean = true,
+    /** TAESD: декодирование в ~2 раза быстрее, лица чуть мягче. */
+    val fastDecoder: Boolean = false,
+    /** Увеличить результат в 2 раза (по умолчанию Lanczos + резкость, за доли секунды). */
+    val upscale: Boolean = true,
+    /** Увеличивать нейросетью RealESRGAN (если скачана): детальнее, но несколько минут. */
+    val neuralUpscale: Boolean = false,
     /** Что было сказано голосом, если запрос переведён с русского. */
     val spokenPrompt: String? = null,
-) {
-    companion object {
-        val SIZES = listOf(256, 384, 512)
-        val STEPS = 1..8
-    }
-}
+)
 
 sealed interface DrawPhase {
     data object Idle : DrawPhase
     data object LoadingModel : DrawPhase
     data class Sampling(val step: Int, val steps: Int) : DrawPhase
     data object Decoding : DrawPhase
+    data object Upscaling : DrawPhase
     data class Error(val message: String) : DrawPhase
 }
 
-data class DrawResult(val bitmap: Bitmap, val prompt: String, val seed: Long, val size: Int, val steps: Int, val millis: Long)
+data class DrawResult(
+    val bitmap: Bitmap,
+    val prompt: String,
+    val seed: Long,
+    val width: Int,
+    val height: Int,
+    val steps: Int,
+    val millis: Long,
+    val file: File? = null,
+)
+
+/** Картинка из истории (лента последних работ). */
+data class GalleryItem(val file: File, val prompt: String)
 
 data class DrawState(
     val phase: DrawPhase = DrawPhase.Idle,
     val result: DrawResult? = null,
     val startedAt: Long = 0,
 ) {
-    val running get() = phase is DrawPhase.LoadingModel || phase is DrawPhase.Sampling || phase is DrawPhase.Decoding
+    val running get() = phase is DrawPhase.LoadingModel || phase is DrawPhase.Sampling ||
+        phase is DrawPhase.Decoding || phase is DrawPhase.Upscaling
 }
 
 data class ImageModelDownloadState(
     val running: Boolean = false,
+    /** Идёт однократное вливание LCM-LoRA в модель (после загрузки). */
+    val merging: Boolean = false,
     val downloadedBytes: Long = 0,
-    val totalBytes: Long = ImageModelSource.totalBytes,
+    val totalBytes: Long = ImageModelSource.requiredBytes,
     val error: String? = null,
 ) {
     val progress get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+}
+
+data class UpscalerState(
+    val installed: Boolean = false,
+    val running: Boolean = false,
+    val downloadedBytes: Long = 0,
+    val error: String? = null,
+) {
+    val progress get() = (downloadedBytes.toFloat() / ImageModelSource.UPSCALER.bytes).coerceIn(0f, 1f)
 }
 
 /**
@@ -93,6 +121,13 @@ class DrawController(
     private val _download = MutableStateFlow(ImageModelDownloadState(downloadedBytes = downloader.downloadedBytes()))
     val download: StateFlow<ImageModelDownloadState> = _download
 
+    private val _upscaler = MutableStateFlow(UpscalerState(installed = downloader.upscalerInstalled()))
+    val upscaler: StateFlow<UpscalerState> = _upscaler
+
+    private val galleryDir = File(context.filesDir, "drawings")
+    private val _gallery = MutableStateFlow(loadGallery())
+    val gallery: StateFlow<List<GalleryItem>> = _gallery
+
     /** Запрос показать вкладку «Рисование» (голосовая команда); UI сбрасывает в false. */
     private val _openRequest = MutableStateFlow(false)
     val openRequest: StateFlow<Boolean> = _openRequest
@@ -106,9 +141,11 @@ class DrawController(
 
     private var ctx = 0L
     private var ctxFastDecoder: Boolean? = null
+    private var ctxFlash: Boolean? = null
     @Volatile private var activeCtx = 0L
 
     private var downloadJob: Job? = null
+    private var upscalerJob: Job? = null
     private var drawJob: Job? = null
     private var releaseJob: Job? = null
 
@@ -124,8 +161,12 @@ class DrawController(
                 downloader.downloadAll { done, total ->
                     _download.value = ImageModelDownloadState(running = true, downloadedBytes = done, totalBytes = total)
                 }
+                if (downloader.needsMerge()) {
+                    _download.update { it.copy(merging = true) }
+                    mergeLcm()
+                }
                 _installed.value = downloader.allInstalled()
-                _download.value = ImageModelDownloadState(downloadedBytes = ImageModelSource.totalBytes)
+                _download.value = ImageModelDownloadState(downloadedBytes = ImageModelSource.requiredBytes)
             } catch (e: CancellationException) {
                 // .part остаётся — «Продолжить» докачает с того же места
                 _download.value = ImageModelDownloadState(downloadedBytes = downloader.downloadedBytes())
@@ -140,6 +181,27 @@ class DrawController(
         }
     }
 
+    /**
+     * Однократно вливаем LCM-LoRA в модель: шаг потом ~1.5 раза быстрее, чем с LoRA «на лету».
+     * Замер на box: ~6 с и ~2.6 ГБ памяти; на телефоне — до пары минут.
+     */
+    private suspend fun mergeLcm() = withContext(nativeDispatcher) {
+        unsupportedReason?.let { throw IllegalStateException(it) }
+        freeContext()
+        downloader.mergeTmp.delete()
+        val ok = StableDiffusionNative.nativeMergeLora(
+            downloader.file(ImageModelSource.BASE).absolutePath,
+            downloader.file(ImageModelSource.LCM_LORA).absolutePath,
+            1.0f,
+            downloader.mergeTmp.absolutePath,
+            threadCount(),
+        )
+        if (!ok || !downloader.finishMerge()) {
+            downloader.mergeTmp.delete()
+            throw IllegalStateException(nativeError("Не удалось подготовить модель / Model preparation failed"))
+        }
+    }
+
     fun cancelDownload() { downloadJob?.cancel() }
 
     fun deleteModel() {
@@ -149,7 +211,33 @@ class DrawController(
             downloader.deleteAll()
             _installed.value = false
             _download.value = ImageModelDownloadState()
+            _upscaler.value = UpscalerState()
         }
+    }
+
+    fun downloadUpscaler() {
+        if (upscalerJob?.isActive == true) return
+        upscalerJob = scope.launch {
+            _upscaler.value = UpscalerState(running = true)
+            try {
+                downloader.downloadUpscaler { done, _ -> _upscaler.value = UpscalerState(running = true, downloadedBytes = done) }
+                _upscaler.value = UpscalerState(installed = downloader.upscalerInstalled())
+            } catch (e: CancellationException) {
+                _upscaler.value = UpscalerState()
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "upscaler download failed", e)
+                _upscaler.value = UpscalerState(error = e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
+    fun cancelUpscalerDownload() { upscalerJob?.cancel() }
+
+    fun deleteUpscaler() {
+        if (_state.value.running) return
+        downloader.deleteUpscaler()
+        _upscaler.value = UpscalerState()
     }
 
     // ---------------- генерация ----------------
@@ -169,21 +257,23 @@ class DrawController(
         if (_state.value.running) return "Уже рисую / Already drawing"
 
         val seed = if (f.seed >= 0) f.seed else Random.nextLong(0, Int.MAX_VALUE.toLong())
-        val size = f.size.coerceIn(256, 512) / 64 * 64
-        val steps = f.steps.coerceIn(DrawForm.STEPS.first, DrawForm.STEPS.last)
+        val size = f.size.takeIf { it in DrawPresets.SIZES } ?: DrawPresets.DEFAULT_SIZE
+        val steps = f.steps.coerceIn(DrawPresets.STEPS.first, DrawPresets.STEPS.last)
         releaseJob?.cancel()
         _state.update { it.copy(phase = DrawPhase.LoadingModel, startedAt = System.currentTimeMillis()) }
         drawJob = scope.launch {
             try {
                 val result = withContext(nativeDispatcher) {
-                    ensureMemory(size)
-                    val handle = ensureContext(f.fastDecoder)
+                    val plan = planFor(f, size, steps)
+                    ensureMemory(plan)
+                    val handle = ensureContext(f.fastDecoder, plan.flashAttn)
                     activeCtx = handle
                     _state.update { it.copy(phase = DrawPhase.Sampling(0, steps)) }
                     val started = System.currentTimeMillis()
                     val rgb = try {
                         StableDiffusionNative.nativeGenerate(
-                            handle, prompt, f.negativePrompt.trim(), size, size, steps, f.cfg, seed,
+                            handle, prompt, f.negativePrompt.trim(), size.width, size.height, steps, f.cfg, seed,
+                            ImageModelSource.SAMPLER, plan.vaeTiling,
                         ) { step, total, _ ->
                             if (total == steps) {
                                 _state.update { s ->
@@ -196,7 +286,14 @@ class DrawController(
                     }
                     if (cancelRequested) throw CancellationException("cancelled")
                     rgb ?: throw IllegalStateException(nativeError("Генерация не удалась / Generation failed"))
-                    DrawResult(toBitmap(rgb, size, size), prompt, seed, size, steps, System.currentTimeMillis() - started)
+                    var bitmap = toBitmap(rgb, size.width, size.height)
+                    if (f.upscale) {
+                        _state.update { it.copy(phase = DrawPhase.Upscaling) }
+                        bitmap = upscale(rgb, bitmap, size, f.neuralUpscale)
+                    }
+                    if (cancelRequested) throw CancellationException("cancelled")
+                    val file = runCatching { saveToHistory(bitmap, prompt) }.onFailure { Log.w(TAG, "history", it) }.getOrNull()
+                    DrawResult(bitmap, prompt, seed, bitmap.width, bitmap.height, steps, System.currentTimeMillis() - started, file)
                 }
                 _state.value = DrawState(phase = DrawPhase.Idle, result = result)
             } catch (e: CancellationException) {
@@ -215,6 +312,82 @@ class DrawController(
         return null
     }
 
+    /**
+     * ×2. По умолчанию — Lanczos-3 + нерезкая маска на CPU (доли секунды, см. [ImageUpscale]).
+     * Если выбран «нейро» и скачан RealESRGAN — нейросеть дорисовывает детали, но это долго (минуты).
+     */
+    private fun upscale(rgb: ByteArray, bitmap: Bitmap, size: DrawSize, neural: Boolean): Bitmap {
+        val factor = DrawPresets.UPSCALE
+        val tw = size.width * factor
+        val th = size.height * factor
+        if (neural && downloader.upscalerInstalled()) {
+            // модель SD освобождаем на время: так пик памяти ниже
+            freeContext()
+            val up = StableDiffusionNative.nativeUpscalerCreate(
+                downloader.file(ImageModelSource.UPSCALER).absolutePath, threadCount(), UPSCALE_TILE,
+            )
+            if (up != 0L) {
+                try {
+                    val out = IntArray(2)
+                    val big = StableDiffusionNative.nativeUpscale(up, rgb, size.width, size.height, out)
+                    if (cancelRequested) throw CancellationException("cancelled")
+                    if (big != null && out[0] > 0) {
+                        val bigBitmap = toBitmap(big, out[0], out[1])
+                        if (out[0] == tw) return bigBitmap
+                        // x4 → x2: уменьшение ровно вдвое с фильтрацией
+                        return Bitmap.createScaledBitmap(bigBitmap, tw, th, true).also { if (it !== bigBitmap) bigBitmap.recycle() }
+                    }
+                    Log.w(TAG, "ESRGAN failed: ${nativeError("")}")
+                } finally {
+                    StableDiffusionNative.nativeUpscalerFree(up)
+                }
+            }
+        }
+        val pixels = IntArray(size.width * size.height)
+        bitmap.getPixels(pixels, 0, size.width, 0, 0, size.width, size.height)
+        val big = ImageUpscale.upscale(pixels, size.width, size.height, factor)
+        return Bitmap.createBitmap(big, tw, th, Bitmap.Config.ARGB_8888)
+    }
+
+    // ---------------- история (лента последних работ) ----------------
+
+    private fun loadGallery(): List<GalleryItem> =
+        galleryDir.listFiles { f -> f.name.endsWith(".png") }.orEmpty()
+            .sortedByDescending { it.name }
+            .take(MAX_GALLERY)
+            .map { GalleryItem(it, File(it.path.removeSuffix(".png") + ".txt").takeIf { t -> t.isFile }?.readText().orEmpty()) }
+
+    private fun saveToHistory(bitmap: Bitmap, prompt: String): File {
+        galleryDir.mkdirs()
+        val file = File(galleryDir, "${System.currentTimeMillis()}.png")
+        file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        File(galleryDir, file.name.removeSuffix(".png") + ".txt").writeText(prompt)
+        galleryDir.listFiles { f -> f.name.endsWith(".png") }.orEmpty().sortedByDescending { it.name }.drop(MAX_GALLERY).forEach {
+            it.delete()
+            File(it.path.removeSuffix(".png") + ".txt").delete()
+        }
+        _gallery.value = loadGallery()
+        return file
+    }
+
+    /** Показать картинку из ленты в превью. */
+    fun openFromGallery(item: GalleryItem) {
+        if (_state.value.running) return
+        scope.launch {
+            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(item.file.path) } ?: return@launch
+            _state.update {
+                it.copy(result = DrawResult(bmp, item.prompt, -1, bmp.width, bmp.height, 0, 0, item.file))
+            }
+        }
+    }
+
+    fun deleteFromGallery(item: GalleryItem) {
+        item.file.delete()
+        File(item.file.path.removeSuffix(".png") + ".txt").delete()
+        _gallery.value = loadGallery()
+        _state.update { if (it.result?.file == item.file) it.copy(result = null) else it }
+    }
+
     @Volatile private var cancelRequested = false
 
     fun cancel() {
@@ -226,31 +399,40 @@ class DrawController(
 
     fun clearError() = _state.update { if (it.phase is DrawPhase.Error) it.copy(phase = DrawPhase.Idle) else it }
 
-    /** Перед загрузкой проверяем свободную память: лучше понятная ошибка, чем убитое системой приложение. */
-    private fun ensureMemory(size: Int) {
-        if (ctx != 0L) return // модель уже в памяти
+    /** Свободная память для расчёта плана (если модель уже загружена — её вес тоже «наш»). */
+    fun availableMemory(): Long {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
-        val need = estimateBytes(size)
-        Log.i(TAG, "avail=${info.availMem / MB} MB, need≈${need / MB} MB, low=${info.lowMemory}")
-        if (info.availMem < need) {
+        return info.availMem + (if (ctx != 0L) MODEL_RAM else 0L)
+    }
+
+    /** План для формы: flash-attention / VAE плитками выбираются по реально свободной памяти. */
+    fun planFor(f: DrawForm, size: DrawSize = f.size, steps: Int = f.steps): DrawPresets.Plan =
+        DrawPresets.plan(size, steps, f.cfg, f.fastDecoder, f.upscale, f.neuralUpscale && downloader.upscalerInstalled(), availableMemory())
+
+    /** Перед загрузкой проверяем свободную память: лучше понятная ошибка, чем убитое системой приложение. */
+    private fun ensureMemory(plan: DrawPresets.Plan) {
+        val avail = availableMemory()
+        Log.i(TAG, "avail=${avail / MB} MB, need≈${plan.peakBytes / MB} MB, flash=${plan.flashAttn}, tiling=${plan.vaeTiling}")
+        if (avail < plan.peakBytes) {
             throw IllegalStateException(
-                "Мало свободной памяти: доступно ${info.availMem / MB} МБ, нужно около ${need / MB} МБ. " +
+                "Мало свободной памяти: доступно ${avail / MB} МБ, нужно около ${plan.peakBytes / MB} МБ. " +
                     "Закрой тяжёлые приложения или выбери размер поменьше. / Not enough free RAM.",
             )
         }
     }
 
-    private fun ensureContext(fastDecoder: Boolean): Long {
-        if (ctx != 0L && ctxFastDecoder == fastDecoder) return ctx
+    private fun ensureContext(fastDecoder: Boolean, flashAttn: Boolean): Long {
+        if (ctx != 0L && ctxFastDecoder == fastDecoder && ctxFlash == flashAttn) return ctx
         freeContext()
         _state.update { it.copy(phase = DrawPhase.LoadingModel) }
-        val model = downloader.file(ImageModelSource.MODEL).absolutePath
+        val model = downloader.mergedFile.absolutePath
         val taesd = if (fastDecoder) downloader.file(ImageModelSource.TAESD).absolutePath else null
-        val handle = StableDiffusionNative.nativeCreate(model, taesd, threadCount(), true)
+        val handle = StableDiffusionNative.nativeCreate(model, taesd, threadCount(), true, flashAttn)
         if (handle == 0L) throw IllegalStateException(nativeError("Не удалось загрузить модель / Failed to load the model"))
         ctx = handle
         ctxFastDecoder = fastDecoder
+        ctxFlash = flashAttn
         return handle
     }
 
@@ -259,10 +441,11 @@ class DrawController(
             StableDiffusionNative.nativeFree(ctx)
             ctx = 0
             ctxFastDecoder = null
+            ctxFlash = null
         }
     }
 
-    /** Модель (~2 ГБ) держим в памяти несколько минут для следующей картинки, потом отпускаем. */
+    /** Модель (~1.8 ГБ) держим в памяти несколько минут для следующей картинки, потом отпускаем. */
     private fun scheduleRelease() {
         releaseJob?.cancel()
         releaseJob = scope.launch {
@@ -315,16 +498,10 @@ class DrawController(
         const val TAG = "DrawController"
         const val MB = 1024L * 1024
         const val KEEP_LOADED_MS = 3 * 60_000L
-        const val LOW_MEMORY = "Не хватило памяти. Закрой другие приложения или выбери размер 384/256. / Out of memory."
-
-        /**
-         * Веса ~1.8 ГБ + рабочие буферы, растущие с площадью картинки.
-         * Замер sd.cpp на x86: пик ~2.3 ГБ RSS для 512×512 с TAESD; берём с небольшим запасом.
-         */
-        fun estimateBytes(size: Int): Long {
-            val area = size.toDouble() * size / (512.0 * 512.0)
-            return 1_900L * MB + (600L * MB * area).toLong()
-        }
+        const val LOW_MEMORY = "Не хватило памяти. Закрой другие приложения или выбери размер поменьше. / Out of memory."
+        const val MODEL_RAM = 1_700L * MB
+        const val MAX_GALLERY = 24
+        const val UPSCALE_TILE = 128
 
         fun threadCount(): Int {
             val cores = Runtime.getRuntime().availableProcessors()

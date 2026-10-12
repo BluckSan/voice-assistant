@@ -23,6 +23,8 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     private val c = AppContainer.from(app)
 
     val state = c.state
+    /** Громкость микрофона 0..1 для анимации волны. */
+    val micLevel = com.hakkiiler.voiceassistant.data.stt.BilingualSpeechEngine.level
     val settings = c.settings.settings
     val chat = c.chat.items
     val events = c.events.items

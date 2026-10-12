@@ -94,7 +94,7 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeLastErr
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeCreate(
-        JNIEnv* env, jobject, jstring model_path, jstring taesd_path, jint threads, jboolean mmap) {
+        JNIEnv* env, jobject, jstring model_path, jstring taesd_path, jint threads, jboolean mmap, jboolean flash_attn) {
     clear_error();
     std::string model = to_string(env, model_path);
     std::string taesd = to_string(env, taesd_path);
@@ -107,7 +107,9 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeCreate(
     p.enable_mmap = mmap;
     p.backend = "cpu";
     p.vae_conv_direct = false;
-    p.eager_load = true;  // всё грузим здесь, а не на первом шаге: прогресс и ошибки памяти предсказуемее
+    p.eager_load = true;
+    // flash attention в UNet: без неё матрица внимания на 768×1152 занимает гигабайты
+    p.diffusion_flash_attn = flash_attn;  // всё грузим здесь, а не на первом шаге: прогресс и ошибки памяти предсказуемее
     sd_ctx_t* ctx = new_sd_ctx(&p);
     return reinterpret_cast<jlong>(ctx);
 }
@@ -126,7 +128,8 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeCancel(
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGenerate(
         JNIEnv* env, jobject, jlong handle, jstring jprompt, jstring jnegative,
-        jint width, jint height, jint steps, jfloat cfg, jlong seed, jobject listener) {
+        jint width, jint height, jint steps, jfloat cfg, jlong seed, jstring jsampler, jboolean vae_tiling,
+        jobject listener) {
     auto* ctx = reinterpret_cast<sd_ctx_t*>(handle);
     if (!ctx) return nullptr;
     clear_error();
@@ -155,7 +158,13 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGenerat
     gp.batch_count = 1;
     gp.sample_params.sample_steps = steps;
     gp.sample_params.guidance.txt_cfg = cfg;
-    // метод сэмплирования и расписание sd.cpp выбирает сам (для SD-Turbo: Euler A + discrete)
+    std::string sampler = to_string(env, jsampler);
+    if (!sampler.empty()) {
+        enum sample_method_t m = str_to_sample_method(sampler.c_str());
+        if (m != SAMPLE_METHOD_COUNT) gp.sample_params.sample_method = m;
+    }
+    // большие картинки декодируем плитками, чтобы VAE не съел всю память
+    gp.vae_tiling_params.enabled = vae_tiling;
 
     sd_image_t* images = nullptr;
     int count = 0;
@@ -192,5 +201,63 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGenerat
         }
     }
     if (images) free_sd_images(images, count);
+    return result;
+}
+
+// ---------------- LCM-LoRA: однократное слияние с моделью ----------------
+
+/** model + LoRA → новый GGUF (q8_0). Делается один раз после загрузки: потом шаг генерации быстрее, чем с LoRA «на лету». */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeMergeLora(
+        JNIEnv* env, jobject, jstring jmodel, jstring jlora, jfloat multiplier, jstring jout, jint threads) {
+    clear_error();
+    std::string model = to_string(env, jmodel);
+    std::string lora_path = to_string(env, jlora);
+    std::string out = to_string(env, jout);
+    sd_lora_t lora{false, multiplier, lora_path.c_str()};
+    return convert_with_components(model.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr, out.c_str(),
+                                   SD_TYPE_Q8_0, nullptr, false, threads, &lora, 1);
+}
+
+// ---------------- ESRGAN-апскейлер ----------------
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeUpscalerCreate(
+        JNIEnv* env, jobject, jstring jpath, jint threads, jint tile) {
+    clear_error();
+    std::string path = to_string(env, jpath);
+    return reinterpret_cast<jlong>(new_upscaler_ctx(path.c_str(), false, threads, tile, "cpu", nullptr));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeUpscalerFree(JNIEnv*, jobject, jlong ctx) {
+    if (ctx) free_upscaler_ctx(reinterpret_cast<upscaler_ctx_t*>(ctx));
+}
+
+/** RGB width*height*3 → RGB в factor раз больше (factor пишется в out_size[0..1]). */
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeUpscale(
+        JNIEnv* env, jobject, jlong handle, jbyteArray jrgb, jint width, jint height, jintArray jout_size) {
+    auto* ctx = reinterpret_cast<upscaler_ctx_t*>(handle);
+    if (!ctx || !jrgb) return nullptr;
+    clear_error();
+    const jsize len = env->GetArrayLength(jrgb);
+    if (len < width * height * 3) return nullptr;
+    std::string input(static_cast<size_t>(len), '\0');
+    env->GetByteArrayRegion(jrgb, 0, len, reinterpret_cast<jbyte*>(&input[0]));
+    sd_image_t in{static_cast<uint32_t>(width), static_cast<uint32_t>(height), 3,
+                  reinterpret_cast<uint8_t*>(&input[0])};
+    sd_image_t* outs = nullptr;
+    int count = 0;
+    bool ok = upscale(ctx, in, static_cast<uint32_t>(get_upscale_factor(ctx)), &outs, &count);
+    jbyteArray result = nullptr;
+    if (ok && outs && count > 0 && outs[0].data && outs[0].channel == 3) {
+        const jsize n = static_cast<jsize>(outs[0].width * outs[0].height * 3);
+        result = env->NewByteArray(n);
+        if (result) env->SetByteArrayRegion(result, 0, n, reinterpret_cast<const jbyte*>(outs[0].data));
+        jint size[2] = {static_cast<jint>(outs[0].width), static_cast<jint>(outs[0].height)};
+        if (jout_size && env->GetArrayLength(jout_size) >= 2) env->SetIntArrayRegion(jout_size, 0, 2, size);
+    }
+    if (outs) free_sd_images(outs, count);
     return result;
 }

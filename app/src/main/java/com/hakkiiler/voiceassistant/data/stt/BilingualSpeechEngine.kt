@@ -10,6 +10,7 @@ import android.util.Log
 import com.hakkiiler.voiceassistant.domain.lang.Hypothesis
 import com.hakkiiler.voiceassistant.domain.lang.WordConf
 import com.hakkiiler.voiceassistant.domain.model.Language
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -68,7 +69,8 @@ class BilingualSpeechEngine {
             while (running) {
                 val n = recorder.read(buf, 0, buf.size)
                 if (n <= 0) continue
-                if (muted) { wasMuted = true; continue }
+                if (muted) { wasMuted = true; level.value = 0f; continue }
+                level.value = rmsLevel(buf, n)
                 if (wasMuted) {
                     recognizers.values.forEach { it.reset() }
                     wasMuted = false
@@ -96,6 +98,7 @@ class BilingualSpeechEngine {
             running = false
             main.post { listener.onError(e) }
         } finally {
+            level.value = 0f
             runCatching { recorder?.stop() }
             runCatching { recorder?.release() }
             recognizers.values.forEach { runCatching { it.close() } }
@@ -104,6 +107,24 @@ class BilingualSpeechEngine {
 
     companion object {
         private const val TAG = "BilingualSTT"
+
+        /** Громкость с микрофона 0..1 — для анимации «волны» на экране (обновляется ~8 раз в секунду). */
+        val level = MutableStateFlow(0f)
+
+        /** RMS 16-бит PCM → 0..1 по логарифмической шкале (−60…0 дБ). */
+        fun rmsLevel(buf: ByteArray, n: Int): Float {
+            var sum = 0.0
+            val samples = n / 2
+            if (samples == 0) return 0f
+            for (i in 0 until samples) {
+                val v = ((buf[2 * i + 1].toInt() shl 8) or (buf[2 * i].toInt() and 0xFF)).toShort().toDouble()
+                sum += v * v
+            }
+            val rms = kotlin.math.sqrt(sum / samples) / 32768.0
+            if (rms <= 1e-6) return 0f
+            val db = 20 * kotlin.math.log10(rms)
+            return ((db + 60) / 60).toFloat().coerceIn(0f, 1f)
+        }
         const val SAMPLE_RATE = 16000
         /** 4096 байт = 2048 сэмплов ≈ 128 мс. */
         private const val CHUNK = 4096

@@ -41,3 +41,4 @@ models/
 # Vosk для full: scripts/download_models.sh
 app/src/full/assets/model-ru/
 app/src/full/assets/model-en/
+*.pth

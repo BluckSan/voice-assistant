@@ -39,8 +39,8 @@ class Replies(private val lang: Language) {
     fun drawStarted(prompt: String) = t("Рисую «$prompt». Это займёт около минуты.", "Drawing \"$prompt\". It will take about a minute.")
     val drawWhat get() = t("Что нарисовать? Открыл экран рисования.", "What should I draw? I've opened the drawing screen.")
     val drawNeedsModel get() = t(
-        "Сначала нужно один раз скачать модель для рисования, около двух гигабайт. Открыл экран рисования.",
-        "First I need to download the drawing model once, about two gigabytes. I've opened the drawing screen.",
+        "Сначала нужно один раз скачать модель для рисования, около двух гигабайт, и подготовить её. Открыл экран рисования.",
+        "First I need to download the drawing model once, about two gigabytes, and prepare it. I've opened the drawing screen.",
     )
     val drawBusy get() = t("Я ещё рисую предыдущую картинку. Подожди немного.", "I'm still working on the previous picture. Please wait.")
     val drawUnsupported get() = t("На этом устройстве рисование не поддерживается.", "Drawing isn't supported on this device.")

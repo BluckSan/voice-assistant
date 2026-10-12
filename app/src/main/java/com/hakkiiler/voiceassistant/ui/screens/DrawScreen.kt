@@ -2,30 +2,66 @@ package com.hakkiiler.voiceassistant.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,33 +69,75 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.hakkiiler.voiceassistant.R
 import com.hakkiiler.voiceassistant.data.image.DrawForm
 import com.hakkiiler.voiceassistant.data.image.DrawPhase
+import com.hakkiiler.voiceassistant.data.image.DrawPresets
 import com.hakkiiler.voiceassistant.data.image.DrawResult
+import com.hakkiiler.voiceassistant.data.image.DrawSize
+import com.hakkiiler.voiceassistant.data.image.DrawState
+import com.hakkiiler.voiceassistant.data.image.GalleryItem
+import com.hakkiiler.voiceassistant.data.image.ImageModelDownloadState
 import com.hakkiiler.voiceassistant.data.image.ImageModelSource
 import com.hakkiiler.voiceassistant.data.image.ImageSaver
+import com.hakkiiler.voiceassistant.data.image.Load
+import com.hakkiiler.voiceassistant.data.image.UpscalerState
 import com.hakkiiler.voiceassistant.ui.AssistantViewModel
+import com.hakkiiler.voiceassistant.ui.components.Banner
+import com.hakkiiler.voiceassistant.ui.components.BannerTone
+import com.hakkiiler.voiceassistant.ui.components.IconBadge
+import com.hakkiiler.voiceassistant.ui.components.ScreenHeader
+import com.hakkiiler.voiceassistant.ui.components.SectionCard
+import com.hakkiiler.voiceassistant.ui.theme.Spacing
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
 
 private fun mb(bytes: Long) = String.format(Locale.US, "%.0f", bytes / 1_000_000.0)
 
+/** Действия экрана — отдельно от ViewModel, чтобы экран можно было отрисовать в превью/скриншот-тестах. */
+class DrawActions(
+    val update: ((DrawForm) -> DrawForm) -> Unit = {},
+    val generate: () -> String? = { null },
+    val cancel: () -> Unit = {},
+    val clearError: () -> Unit = {},
+    val download: () -> Unit = {},
+    val cancelDownload: () -> Unit = {},
+    val downloadUpscaler: () -> Unit = {},
+    val openGallery: (GalleryItem) -> Unit = {},
+    val deleteGallery: (GalleryItem) -> Unit = {},
+    val save: (DrawResult) -> Unit = {},
+    val share: (DrawResult) -> Unit = {},
+)
+
 /**
- * «Рисование / Draw»: офлайн-генерация картинок моделью SD-Turbo через stable-diffusion.cpp.
+ * «Рисование / Draw»: офлайн-генерация картинок (Realistic Vision V6 + LCM-LoRA) через stable-diffusion.cpp.
  * Голосом: «нарисуй кота в космосе» / "draw a red fox in the snow".
  */
 @Composable
@@ -69,254 +147,560 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
     val state by draw.state.collectAsStateWithLifecycle()
     val installed by draw.installed.collectAsStateWithLifecycle()
     val dl by draw.download.collectAsStateWithLifecycle()
+    val upscaler by draw.upscaler.collectAsStateWithLifecycle()
+    val gallery by draw.gallery.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // пока рисуем — экран не гаснет (генерация идёт на CPU около минуты)
+    // пока рисуем — экран не гаснет (генерация идёт на CPU несколько минут)
     val view = LocalView.current
     DisposableEffect(state.running) {
         view.keepScreenOn = state.running
         onDispose { view.keepScreenOn = false }
     }
 
-    Column(
-        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text("Рисование / Draw", style = MaterialTheme.typography.headlineSmall)
+    val savedMsg = stringResource(R.string.draw_saved)
+    val saveFailed = stringResource(R.string.draw_save_failed)
+    val shareFailed = stringResource(R.string.draw_share_failed)
+    val noPermission = stringResource(R.string.draw_no_permission)
+    var pendingSave by remember { mutableStateOf<DrawResult?>(null) }
+    val doSave: (DrawResult) -> Unit = { r ->
+        scope.launch {
+            val msg = runCatching { ImageSaver.saveToGallery(context, r.bitmap) }.fold({ savedMsg }, { "$saveFailed: ${it.message}" })
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        val r = pendingSave
+        if (ok && r != null) doSave(r) else Toast.makeText(context, noPermission, Toast.LENGTH_SHORT).show()
+    }
 
-        val unsupported = draw.unsupportedReason
-        if (unsupported != null) {
-            ErrorCard("Рисование недоступно на этом устройстве / Not supported on this device", unsupported)
+    DrawContent(
+        form = form,
+        state = state,
+        installed = installed,
+        download = dl,
+        upscaler = upscaler,
+        gallery = gallery,
+        unsupportedReason = draw.unsupportedReason,
+        plan = remember(form, upscaler.installed, state.running) { draw.planFor(form) },
+        actions = DrawActions(
+            update = { draw.updateForm(it) },
+            generate = { draw.generate()?.also { Toast.makeText(context, it, Toast.LENGTH_LONG).show() } },
+            cancel = { draw.cancel() },
+            clearError = { draw.clearError() },
+            download = { draw.downloadModel() },
+            cancelDownload = { draw.cancelDownload() },
+            downloadUpscaler = { draw.downloadUpscaler() },
+            openGallery = { draw.openFromGallery(it) },
+            deleteGallery = { draw.deleteFromGallery(it) },
+            save = { r ->
+                val legacy = ImageSaver.needsLegacyPermission &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                if (legacy) { pendingSave = r; permission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE) } else doSave(r)
+            },
+            share = { r ->
+                scope.launch {
+                    runCatching { ImageSaver.share(context, r.bitmap, r.prompt) }
+                        .onFailure { Toast.makeText(context, "$shareFailed: ${it.message}", Toast.LENGTH_LONG).show() }
+                }
+            },
+        ),
+        modifier = modifier,
+    )
+}
+
+@Composable
+fun DrawContent(
+    form: DrawForm,
+    state: DrawState,
+    installed: Boolean,
+    download: ImageModelDownloadState,
+    upscaler: UpscalerState,
+    gallery: List<GalleryItem>,
+    unsupportedReason: String?,
+    actions: DrawActions,
+    modifier: Modifier = Modifier,
+    plan: DrawPresets.Plan = DrawPresets.plan(
+        form.size, form.steps, form.cfg, form.fastDecoder, form.upscale, form.neuralUpscale && upscaler.installed,
+    ),
+) {
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = Spacing.screen).padding(bottom = Spacing.xl),
+        verticalArrangement = Arrangement.spacedBy(Spacing.m),
+    ) {
+        ScreenHeader(stringResource(R.string.tab_draw), stringResource(R.string.draw_subtitle))
+
+        if (unsupportedReason != null) {
+            Banner(unsupportedReason, title = stringResource(R.string.draw_unsupported), tone = BannerTone.Error)
             return@Column
         }
 
-        if (!installed) ModelCard(vm, dl.running, dl.progress, dl.downloadedBytes, dl.totalBytes, dl.error)
+        if (!installed) ModelDownloadCard(download, actions)
 
-        OutlinedTextField(
-            value = form.prompt,
-            onValueChange = { v -> draw.updateForm { it.copy(prompt = v, spokenPrompt = null) } },
-            label = { Text("Что нарисовать (лучше по-английски) / Prompt") },
-            placeholder = { Text("a cozy cabin in a snowy forest, sunset, highly detailed") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 2,
-            enabled = !state.running,
-        )
-        form.spokenPrompt?.let {
-            Text(
-                "Сказано: «$it». Модель понимает только английский, поэтому запрос переведён словарём — поправь, если нужно.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        OutlinedTextField(
-            value = form.negativePrompt,
-            onValueChange = { v -> draw.updateForm { it.copy(negativePrompt = v) } },
-            label = { Text("Чего не должно быть / Negative prompt") },
-            placeholder = { Text("blurry, text, watermark") },
-            supportingText = { Text("Работает при CFG больше 1 / Used only when CFG > 1") },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !state.running,
-        )
+        PreviewCard(form, state, actions)
 
-        Settings(form, enabled = !state.running) { t -> draw.updateForm(t) }
+        if (gallery.isNotEmpty()) GalleryStrip(gallery, state.result?.file, enabled = !state.running, actions)
 
-        // ---- кнопки ----
-        if (state.running) {
-            Progress(state.phase, state.startedAt)
-            OutlinedButton(onClick = { draw.cancel() }, modifier = Modifier.fillMaxWidth()) { Text("Отмена / Cancel") }
-        } else {
-            Button(
-                onClick = {
-                    draw.generate()?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
-                },
-                enabled = installed && form.prompt.isNotBlank(),
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Нарисовать / Generate") }
-        }
+        PromptCard(form, state, installed, actions)
 
-        (state.phase as? DrawPhase.Error)?.let { e ->
-            ErrorCard("Не получилось / Failed", e.message) { TextButton(onClick = { draw.clearError() }) { Text("OK") } }
-        }
+        SizeCard(form, plan, upscaler, enabled = !state.running, actions)
 
-        state.result?.let { r -> ResultCard(r, onSave = {
-            scope.launch {
-                val msg = runCatching { ImageSaver.saveToGallery(context, r.bitmap) }
-                    .fold({ "Сохранено в Галерею → Pictures/VoiceAssistant" }, { "Не удалось сохранить: ${it.message}" })
-                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-            }
-        }, onShare = {
-            scope.launch {
-                runCatching { ImageSaver.share(context, r.bitmap, r.prompt) }
-                    .onFailure { Toast.makeText(context, "Не удалось поделиться: ${it.message}", Toast.LENGTH_LONG).show() }
-            }
-        }) }
+        AdvancedCard(form, enabled = !state.running, actions)
 
         Text(
-            "Модель: ${ImageModelSource.MODEL_NAME}, ${ImageModelSource.LICENSE}. Powered by Stability AI. " +
-                "Всё считается на телефоне, без интернета и облачных фильтров.",
+            stringResource(R.string.draw_footer, ImageModelSource.MODEL_NAME),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (installed && !state.running) {
-            TextButton(onClick = { draw.deleteModel() }) { Text("Удалить модель (освободить ~2 ГБ) / Delete model") }
+    }
+}
+
+// ---------------- загрузка модели (первый запуск рисования) ----------------
+
+@Composable
+private fun ModelDownloadCard(dl: ImageModelDownloadState, actions: DrawActions) {
+    SectionCard(
+        title = stringResource(R.string.draw_model_title),
+        subtitle = stringResource(R.string.draw_model_size, mb(dl.totalBytes)),
+        icon = painterResource(R.drawable.ic_download),
+        container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+    ) {
+        Text(stringResource(R.string.draw_model_text), style = MaterialTheme.typography.bodyMedium)
+        val started = dl.running || dl.downloadedBytes > 0
+        if (dl.merging) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Hint(stringResource(R.string.draw_model_merging))
+        } else if (started) {
+            LinearProgressIndicator(progress = { dl.progress }, modifier = Modifier.fillMaxWidth())
+            Hint(stringResource(R.string.draw_model_progress, mb(dl.downloadedBytes), mb(dl.totalBytes), (dl.progress * 100).toInt()))
+        }
+        dl.error?.let { Banner(it, title = stringResource(R.string.download_failed), tone = BannerTone.Error) }
+        when {
+            dl.merging -> {}
+            dl.running -> OutlinedButton(onClick = actions.cancelDownload) { Text(stringResource(R.string.action_pause)) }
+            dl.error != null -> Button(onClick = actions.download) { Text(stringResource(R.string.action_retry)) }
+            dl.downloadedBytes > 0 -> Button(onClick = actions.download) { Text(stringResource(R.string.action_resume)) }
+            else -> Button(onClick = actions.download, modifier = Modifier.fillMaxWidth()) {
+                Icon(painterResource(R.drawable.ic_download), null, Modifier.size(18.dp))
+                Spacer(Modifier.size(Spacing.s))
+                Text(stringResource(R.string.draw_model_download, mb(dl.totalBytes)))
+            }
+        }
+    }
+}
+
+// ---------------- превью / прогресс / результат ----------------
+
+@Composable
+private fun PreviewCard(form: DrawForm, state: DrawState, actions: DrawActions) {
+    val result = state.result
+    val ratio = when {
+        state.running -> form.size.width.toFloat() / form.size.height
+        result != null -> result.width.toFloat() / result.height
+        else -> form.size.width.toFloat() / form.size.height
+    }
+    Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Box(
+                Modifier.fillMaxWidth().heightIn(max = 520.dp).aspectRatio(ratio, matchHeightConstraintsFirst = ratio < 1f)
+                    .align(Alignment.CenterHorizontally).clip(MaterialTheme.shapes.extraLarge),
+                contentAlignment = Alignment.Center,
+            ) {
+                when {
+                    state.running -> RunningPreview(state)
+                    result != null -> Image(
+                        result.bitmap.asImageBitmap(), contentDescription = result.prompt,
+                        contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                    )
+                    else -> EmptyPreview()
+                }
+            }
+            val error = state.phase as? DrawPhase.Error
+            if (error != null) {
+                Banner(
+                    error.message, title = stringResource(R.string.draw_failed), tone = BannerTone.Error,
+                    modifier = Modifier.padding(Spacing.m),
+                    actions = { TextButton(onClick = actions.clearError) { Text("OK") } },
+                )
+            }
+            if (result != null && !state.running) ResultActions(result, actions)
+            if (state.running) {
+                OutlinedButton(onClick = actions.cancel, modifier = Modifier.fillMaxWidth().padding(Spacing.m)) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ModelCard(vm: AssistantViewModel, running: Boolean, progress: Float, done: Long, total: Long, error: String?) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Нужна модель для рисования / Model required", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "${ImageModelSource.MODEL_NAME} + TAESD, ~${mb(total)} МБ, скачивается один раз с Hugging Face. " +
-                    "Лучше по Wi-Fi; нужно ~2,4 ГБ свободного места. После загрузки рисование работает офлайн.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            if (running || done > 0) {
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                Text("${mb(done)} / ${mb(total)} МБ (${(progress * 100).toInt()}%)", style = MaterialTheme.typography.bodySmall)
+private fun EmptyPreview() {
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f), MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f))),
+        ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            IconBadge(painterResource(R.drawable.ic_image), size = 64, container = MaterialTheme.colorScheme.surfaceContainerHighest)
+            Text(stringResource(R.string.draw_empty_preview), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun RunningPreview(state: DrawState) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(state.startedAt) { while (true) { now = System.currentTimeMillis(); delay(500) } }
+    val seconds = ((now - state.startedAt) / 1000).coerceAtLeast(0)
+    val shimmer by rememberInfiniteTransition(label = "shimmer").animateFloat(
+        0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing)), label = "s",
+    )
+    val c = MaterialTheme.colorScheme
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.linearGradient(
+                listOf(c.primaryContainer.copy(alpha = 0.35f), c.secondaryContainer.copy(alpha = 0.7f), c.primaryContainer.copy(alpha = 0.35f)),
+                start = androidx.compose.ui.geometry.Offset(shimmer * 1600f - 600f, 0f),
+                end = androidx.compose.ui.geometry.Offset(shimmer * 1600f, 900f),
+            ),
+        ),
+        contentAlignment = Alignment.Center,
+    ) {
+        val phase = state.phase
+        val (label, fraction) = when (phase) {
+            DrawPhase.LoadingModel -> stringResource(R.string.draw_phase_loading) to null
+            is DrawPhase.Sampling -> stringResource(R.string.draw_phase_step, phase.step, phase.steps) to
+                (phase.step.toFloat() / phase.steps.coerceAtLeast(1))
+            DrawPhase.Decoding -> stringResource(R.string.draw_phase_decoding) to null
+            DrawPhase.Upscaling -> stringResource(R.string.draw_phase_upscaling) to null
+            else -> "" to null
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Spacing.m)) {
+            Box(contentAlignment = Alignment.Center) {
+                if (fraction != null) {
+                    CircularProgressIndicator(progress = { fraction }, modifier = Modifier.size(84.dp), strokeWidth = 6.dp, trackColor = c.surfaceContainerHighest)
+                    Text("${(fraction * 100).roundToInt()}%", style = MaterialTheme.typography.titleMedium)
+                } else {
+                    CircularProgressIndicator(Modifier.size(84.dp), strokeWidth = 6.dp, trackColor = c.surfaceContainerHighest)
+                }
             }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-            when {
-                running -> OutlinedButton(onClick = { vm.draw.cancelDownload() }) { Text("Пауза / Cancel") }
-                error != null -> Button(onClick = { vm.draw.downloadModel() }) { Text("Повторить / Retry") }
-                done > 0 -> Button(onClick = { vm.draw.downloadModel() }) { Text("Продолжить / Resume") }
-                else -> Button(onClick = { vm.draw.downloadModel() }) { Text("Скачать / Download (~${mb(total)} МБ)") }
+            Text(label, style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.draw_elapsed, formatClock(seconds)), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
+        }
+    }
+}
+
+private fun formatClock(sec: Long) = "%d:%02d".format(sec / 60, sec % 60)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ResultActions(r: DrawResult, actions: DrawActions) {
+    Column(Modifier.padding(Spacing.m), verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+        Text(r.prompt, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MetaChip("${r.width}×${r.height}")
+            if (r.steps > 0) MetaChip(stringResource(R.string.draw_meta_steps, r.steps))
+            if (r.seed >= 0) MetaChip("seed ${r.seed}")
+            if (r.millis > 0) MetaChip(formatClock(r.millis / 1000))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            Button(onClick = { actions.save(r) }, modifier = Modifier.weight(1f)) {
+                Icon(painterResource(R.drawable.ic_download), null, Modifier.size(18.dp))
+                Spacer(Modifier.size(Spacing.s))
+                Text(stringResource(R.string.action_save_gallery))
+            }
+            FilledTonalButton(onClick = { actions.share(r) }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Share, null, Modifier.size(18.dp))
+                Spacer(Modifier.size(Spacing.s))
+                Text(stringResource(R.string.action_share))
+            }
+        }
+        if (r.seed >= 0) {
+            TextButton(onClick = { actions.update { it.copy(seed = r.seed, prompt = r.prompt) } }) {
+                Icon(Icons.Filled.Refresh, null, Modifier.size(18.dp))
+                Spacer(Modifier.size(Spacing.s))
+                Text(stringResource(R.string.draw_reuse_seed))
             }
         }
     }
 }
 
 @Composable
-private fun Settings(form: DrawForm, enabled: Boolean, update: ((DrawForm) -> DrawForm) -> Unit) {
-    Text("Размер / Size", style = MaterialTheme.typography.titleSmall)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        DrawForm.SIZES.forEach { s ->
-            FilterChip(
-                selected = form.size == s,
-                onClick = { update { it.copy(size = s) } },
-                label = { Text("$s×$s") },
+private fun MetaChip(text: String) {
+    Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+        Text(text, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = Spacing.s, vertical = Spacing.xs))
+    }
+}
+
+// ---------------- лента последних работ ----------------
+
+@Composable
+private fun GalleryStrip(items: List<GalleryItem>, current: File?, enabled: Boolean, actions: DrawActions) {
+    Column(verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.draw_recent), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            val selected = items.firstOrNull { it.file == current }
+            if (selected != null && enabled) {
+                IconButton(onClick = { actions.deleteGallery(selected) }) {
+                    Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.action_delete))
+                }
+            }
+        }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(Spacing.s), contentPadding = PaddingValues(end = Spacing.s)) {
+            items(items, key = { it.file.path }) { item ->
+                val thumb = rememberThumbnail(item.file)
+                val selected = item.file == current
+                Box(
+                    Modifier.size(76.dp).clip(MaterialTheme.shapes.medium)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .then(if (selected) Modifier.border(BorderStroke(3.dp, MaterialTheme.colorScheme.primary), MaterialTheme.shapes.medium) else Modifier)
+                        .clickable(enabled = enabled) { actions.openGallery(item) },
+                ) {
+                    thumb?.let { Image(it.asImageBitmap(), item.prompt, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberThumbnail(file: File): Bitmap? = produceState<Bitmap?>(null, file) {
+    value = withContext(Dispatchers.IO) {
+        runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.path, bounds)
+            var sample = 1
+            while (bounds.outWidth / (sample * 2) >= 200) sample *= 2
+            BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+        }.getOrNull()
+    }
+}.value
+
+// ---------------- запрос ----------------
+
+@Composable
+private fun PromptCard(form: DrawForm, state: DrawState, installed: Boolean, actions: DrawActions) {
+    SectionCard(title = stringResource(R.string.draw_prompt_title), icon = painterResource(R.drawable.ic_sparkle)) {
+        OutlinedTextField(
+            value = form.prompt,
+            onValueChange = { v -> actions.update { it.copy(prompt = v, spokenPrompt = null) } },
+            placeholder = { Text(stringResource(R.string.draw_prompt_placeholder)) },
+            supportingText = { Text(stringResource(R.string.draw_prompt_hint)) },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+            enabled = !state.running,
+            shape = MaterialTheme.shapes.medium,
+        )
+        form.spokenPrompt?.let { Banner(stringResource(R.string.draw_spoken, it), tone = BannerTone.Info) }
+        Button(
+            onClick = { actions.generate() },
+            enabled = installed && form.prompt.isNotBlank() && !state.running,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            contentPadding = ButtonDefaults.ButtonWithIconContentPadding,
+        ) {
+            Icon(painterResource(R.drawable.ic_sparkle), null, Modifier.size(20.dp))
+            Spacer(Modifier.size(Spacing.s))
+            val out = DrawPresets.outputSize(form.size, form.upscale)
+            Text(stringResource(R.string.draw_generate, out.label))
+        }
+    }
+}
+
+// ---------------- размер и увеличение ----------------
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SizeCard(form: DrawForm, plan: DrawPresets.Plan, upscaler: UpscalerState, enabled: Boolean, actions: DrawActions) {
+    var orientation by rememberSaveable { mutableStateOf(form.size.orientation) }
+    SectionCard(title = stringResource(R.string.draw_size_title), icon = painterResource(R.drawable.ic_image)) {
+        val options = listOf(
+            DrawSize.Orientation.PORTRAIT to stringResource(R.string.draw_portrait),
+            DrawSize.Orientation.SQUARE to stringResource(R.string.draw_square),
+            DrawSize.Orientation.LANDSCAPE to stringResource(R.string.draw_landscape),
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            options.forEachIndexed { i, (o, label) ->
+                SegmentedButton(
+                    selected = orientation == o,
+                    onClick = {
+                        orientation = o
+                        DrawPresets.SIZES.firstOrNull { it.orientation == o }?.let { s ->
+                            // ближайший по площади размер в новой ориентации
+                            val best = DrawPresets.SIZES.filter { it.orientation == o }.minBy { kotlin.math.abs(it.area - form.size.area) }
+                            actions.update { f -> f.copy(size = best ?: s) }
+                        }
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                    enabled = enabled,
+                ) { Text(label, maxLines = 1) }
+            }
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            DrawPresets.SIZES.filter { it.orientation == orientation }.forEach { s ->
+                FilterChip(
+                    selected = form.size == s,
+                    onClick = { actions.update { it.copy(size = s) } },
+                    label = { Text(s.label) },
+                    enabled = enabled,
+                    leadingIcon = if (DrawPresets.load(s) >= Load.HEAVY) {
+                        { Icon(Icons.Filled.Warning, null, Modifier.size(16.dp)) }
+                    } else null,
+                )
+            }
+        }
+        LoadInfo(form, plan)
+
+        HorizontalRule()
+        SwitchRow(
+            title = stringResource(R.string.draw_upscale_title, DrawPresets.outputSize(form.size, true).label),
+            text = stringResource(R.string.draw_upscale_basic),
+            checked = form.upscale,
+            enabled = enabled,
+            onChange = { v -> actions.update { it.copy(upscale = v) } },
+        )
+        AnimatedVisibility(form.upscale) {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                val extra = DrawPresets.formatDuration(
+                    DrawPresets.estimateSeconds(form.size, form.steps, form.cfg, true, true).last -
+                        DrawPresets.estimateSeconds(form.size, form.steps, form.cfg, true, false).last,
+                )
+                SwitchRow(
+                    title = stringResource(R.string.draw_neural_title),
+                    text = stringResource(if (upscaler.installed) R.string.draw_upscale_esrgan else R.string.draw_upscaler_missing_short, extra),
+                    checked = form.neuralUpscale && upscaler.installed,
+                    enabled = enabled && upscaler.installed,
+                    onChange = { v -> actions.update { it.copy(neuralUpscale = v) } },
+                )
+                if (!upscaler.installed) {
+                    if (upscaler.running) {
+                        LinearProgressIndicator(progress = { upscaler.progress }, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        AssistChip(
+                            onClick = actions.downloadUpscaler,
+                            label = { Text(stringResource(R.string.draw_upscaler_download, mb(ImageModelSource.UPSCALER.bytes))) },
+                            leadingIcon = { Icon(painterResource(R.drawable.ic_download), null, Modifier.size(18.dp)) },
+                        )
+                    }
+                }
+                upscaler.error?.let { Banner(it, tone = BannerTone.Error) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HorizontalRule() = androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+@Composable
+private fun LoadInfo(form: DrawForm, plan: DrawPresets.Plan) {
+    val load = DrawPresets.load(form.size)
+    val (labelRes, tone) = when (load) {
+        Load.LIGHT -> R.string.load_light to null
+        Load.NORMAL -> R.string.load_normal to null
+        Load.HEAVY -> R.string.load_heavy to BannerTone.Warning
+        Load.EXTREME -> R.string.load_extreme to BannerTone.Error
+    }
+    val text = stringResource(
+        R.string.draw_estimate,
+        String.format(Locale.US, "%.1f", plan.peakBytes / 1_073_741_824.0),
+        DrawPresets.formatDuration(plan.seconds.first),
+        DrawPresets.formatDuration(plan.seconds.last),
+    ) + if (plan.flashAttn) "\n" + stringResource(R.string.draw_low_memory_mode) else ""
+    if (tone == null) {
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(painterResource(R.drawable.ic_memory), null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.secondary)
+            Spacer(Modifier.size(Spacing.s))
+            Hint(stringResource(labelRes) + " · " + text)
+        }
+    } else {
+        Banner(
+            text + "\n" + stringResource(if (load == Load.EXTREME) R.string.draw_warn_extreme else R.string.draw_warn_heavy),
+            title = stringResource(labelRes),
+            icon = rememberVectorPainter(Icons.Filled.Warning),
+            tone = tone,
+        )
+    }
+}
+
+// ---------------- дополнительно ----------------
+
+@Composable
+private fun AdvancedCard(form: DrawForm, enabled: Boolean, actions: DrawActions) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    SectionCard(modifier = Modifier.animateContentSize()) {
+        Row(Modifier.fillMaxWidth().clickable { open = !open }, verticalAlignment = Alignment.CenterVertically) {
+            IconBadge(painterResource(R.drawable.ic_tune))
+            Spacer(Modifier.size(Spacing.m))
+            Column(Modifier.weight(1f)) {
+                Text(stringResource(R.string.draw_advanced), style = MaterialTheme.typography.titleMedium)
+                Hint(
+                    stringResource(R.string.draw_advanced_summary, form.steps, String.format(Locale.US, "%.1f", form.cfg)) +
+                        if (form.seed >= 0) " · seed ${form.seed}" else "",
+                )
+            }
+            Icon(if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown, null)
+        }
+        if (open) {
+            Text(stringResource(R.string.draw_steps, form.steps), style = MaterialTheme.typography.titleSmall)
+            Slider(
+                value = form.steps.toFloat(),
+                onValueChange = { v -> actions.update { it.copy(steps = v.roundToInt()) } },
+                valueRange = DrawPresets.STEPS.first.toFloat()..DrawPresets.STEPS.last.toFloat(),
+                steps = DrawPresets.STEPS.last - DrawPresets.STEPS.first - 1,
                 enabled = enabled,
             )
-        }
-    }
-    Text(
-        "SD-Turbo лучше всего рисует 512×512; 256 и 384 быстрее, но проще.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+            Hint(stringResource(R.string.draw_steps_hint))
 
-    Text("Шаги / Steps: ${form.steps}", style = MaterialTheme.typography.titleSmall)
-    Slider(
-        value = form.steps.toFloat(),
-        onValueChange = { v -> update { it.copy(steps = v.roundToInt()) } },
-        valueRange = DrawForm.STEPS.first.toFloat()..DrawForm.STEPS.last.toFloat(),
-        steps = DrawForm.STEPS.last - DrawForm.STEPS.first - 1,
-        enabled = enabled,
-    )
-
-    Text("CFG: ${String.format(Locale.US, "%.1f", form.cfg)}", style = MaterialTheme.typography.titleSmall)
-    Slider(
-        value = form.cfg,
-        onValueChange = { v -> update { it.copy(cfg = (v * 2).roundToInt() / 2f) } },
-        valueRange = 1f..4f,
-        steps = 5,
-        enabled = enabled,
-    )
-    Text(
-        "1.0 — как задумано для SD-Turbo. Больше 1 включает негативный запрос, но каждый шаг вдвое дольше.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = if (form.seed < 0) "" else form.seed.toString(),
-            onValueChange = { v -> update { it.copy(seed = v.filter(Char::isDigit).take(10).toLongOrNull() ?: -1) } },
-            label = { Text("Seed") },
-            placeholder = { Text("случайный / random") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            singleLine = true,
-            enabled = enabled,
-            modifier = Modifier.weight(1f),
-        )
-        TextButton(onClick = { update { it.copy(seed = -1) } }, enabled = enabled) { Text("🎲") }
-    }
-
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("Быстрый декодер (TAESD)", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "Быстрее в несколько раз, детали чуть мягче / Faster, slightly softer",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Text("CFG: ${String.format(Locale.US, "%.1f", form.cfg)}", style = MaterialTheme.typography.titleSmall)
+            Slider(
+                value = form.cfg,
+                onValueChange = { v -> actions.update { it.copy(cfg = (v * 4).roundToInt() / 4f) } },
+                valueRange = 1f..2f,
+                steps = 3,
+                enabled = enabled,
             )
-        }
-        Switch(checked = form.fastDecoder, onCheckedChange = { v -> update { it.copy(fastDecoder = v) } }, enabled = enabled)
-    }
-}
+            Hint(stringResource(R.string.draw_cfg_hint))
 
-@Composable
-private fun Progress(phase: DrawPhase, startedAt: Long) {
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(startedAt) {
-        while (true) { now = System.currentTimeMillis(); delay(500) }
-    }
-    val seconds = ((now - startedAt) / 1000).coerceAtLeast(0)
-    val (label, fraction) = when (phase) {
-        DrawPhase.LoadingModel -> "Загружаю модель в память… / Loading model" to null
-        is DrawPhase.Sampling -> "Шаг ${phase.step} из ${phase.steps} / Step" to
-            (phase.step.toFloat() / phase.steps.coerceAtLeast(1))
-        DrawPhase.Decoding -> "Проявляю картинку… / Decoding" to null
-        else -> "" to null
-    }
-    Text("$label · ${seconds} с", style = MaterialTheme.typography.bodyMedium)
-    if (fraction != null) {
-        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-    } else {
-        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-    }
-}
+            OutlinedTextField(
+                value = form.negativePrompt,
+                onValueChange = { v -> actions.update { it.copy(negativePrompt = v) } },
+                label = { Text(stringResource(R.string.draw_negative)) },
+                supportingText = { Text(stringResource(R.string.draw_negative_hint)) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = enabled,
+                minLines = 2,
+                shape = MaterialTheme.shapes.medium,
+            )
 
-@Composable
-private fun ResultCard(r: DrawResult, onSave: () -> Unit, onShare: () -> Unit) {
-    val context = LocalContext.current
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) onSave() else Toast.makeText(context, "Нет разрешения на запись", Toast.LENGTH_SHORT).show()
-    }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Image(
-                bitmap = r.bitmap.asImageBitmap(),
-                contentDescription = r.prompt,
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-            )
-            Text(
-                "${r.size}×${r.size}, ${r.steps} шаг., seed ${r.seed}, ${String.format(Locale.US, "%.1f", r.millis / 1000.0)} с",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    val legacy = ImageSaver.needsLegacyPermission &&
-                        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
-                    if (legacy) permission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE) else onSave()
-                }) { Text("В галерею / Save") }
-                OutlinedButton(onClick = onShare) { Text("Поделиться / Share") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+                OutlinedTextField(
+                    value = if (form.seed < 0) "" else form.seed.toString(),
+                    onValueChange = { v -> actions.update { it.copy(seed = v.filter(Char::isDigit).take(10).toLongOrNull() ?: -1) } },
+                    label = { Text("Seed") },
+                    placeholder = { Text(stringResource(R.string.draw_seed_random)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                    shape = MaterialTheme.shapes.medium,
+                )
+                IconButton(onClick = { actions.update { it.copy(seed = -1) } }, enabled = enabled) {
+                    Icon(painterResource(R.drawable.ic_dice), contentDescription = stringResource(R.string.draw_seed_random))
+                }
             }
-        }
-    }
-}
 
-@Composable
-private fun ErrorCard(title: String, message: String, actions: (@Composable () -> Unit)? = null) {
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
-            Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
-            actions?.invoke()
+            SwitchRow(
+                title = stringResource(R.string.draw_fast_decoder),
+                text = stringResource(R.string.draw_fast_decoder_hint),
+                checked = form.fastDecoder,
+                enabled = enabled,
+                onChange = { v -> actions.update { it.copy(fastDecoder = v) } },
+            )
+            TextButton(onClick = { actions.update { DrawForm(prompt = it.prompt, spokenPrompt = it.spokenPrompt) } }, enabled = enabled) {
+                Text(stringResource(R.string.draw_reset_defaults))
+            }
         }
     }
 }

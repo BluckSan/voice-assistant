@@ -46,12 +46,21 @@ object StableDiffusionNative {
 
     external fun nativeSystemInfo(): String
     external fun nativeLastError(): String
-    external fun nativeCreate(modelPath: String, taesdPath: String?, threads: Int, mmap: Boolean): Long
+    external fun nativeCreate(modelPath: String, taesdPath: String?, threads: Int, mmap: Boolean, flashAttn: Boolean): Long
     external fun nativeFree(ctx: Long)
     external fun nativeCancel(ctx: Long)
     external fun nativeGenerate(
         ctx: Long, prompt: String, negative: String,
         width: Int, height: Int, steps: Int, cfg: Float, seed: Long,
+        sampler: String, vaeTiling: Boolean,
         listener: ProgressListener?,
     ): ByteArray?
+
+    /** Сливает LoRA с моделью в новый GGUF q8_0 (однократно после загрузки). */
+    external fun nativeMergeLora(modelPath: String, loraPath: String, multiplier: Float, outPath: String, threads: Int): Boolean
+
+    external fun nativeUpscalerCreate(path: String, threads: Int, tile: Int): Long
+    external fun nativeUpscalerFree(ctx: Long)
+    /** @param outSize сюда пишутся ширина и высота результата */
+    external fun nativeUpscale(ctx: Long, rgb: ByteArray, width: Int, height: Int, outSize: IntArray): ByteArray?
 }

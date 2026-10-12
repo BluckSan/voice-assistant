@@ -18,6 +18,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.hakkiiler.voiceassistant.R
 import androidx.compose.ui.unit.dp
 import com.hakkiiler.voiceassistant.domain.model.AppInfo
 
@@ -28,10 +30,10 @@ fun AppPickerDialog(apps: List<AppInfo>, onPick: (AppInfo) -> Unit, onDismiss: (
     val filtered = apps.filter { it.label.contains(query, ignoreCase = true) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Выбери приложение") },
+        title = { Text(stringResource(R.string.app_picker_title)) },
         text = {
             Column {
-                OutlinedTextField(query, { query = it }, label = { Text("Поиск") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(query, { query = it }, label = { Text(stringResource(R.string.app_picker_search)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 LazyColumn(Modifier.height(360.dp)) {
                     items(filtered, key = { it.packageName }) { app ->
                         Column(Modifier.fillMaxWidth().clickable { onPick(app) }.padding(vertical = 10.dp)) {
@@ -43,6 +45,6 @@ fun AppPickerDialog(apps: List<AppInfo>, onPick: (AppInfo) -> Unit, onDismiss: (
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 }
