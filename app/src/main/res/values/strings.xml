@@ -185,4 +185,6 @@
     <string name="img2img_other_way">Выбрать через «Файлы»</string>
     <string name="img2img_share_log">Отправить журнал</string>
     <string name="img2img_files">Из файлов</string>
+    <string name="img2img_fast">Быстрое проявление (TAESD)</string>
+    <string name="img2img_fast_hint">Секунды вместо минут и мало памяти; детали чуть мягче. Выключи для максимального качества.</string>
 </resources>

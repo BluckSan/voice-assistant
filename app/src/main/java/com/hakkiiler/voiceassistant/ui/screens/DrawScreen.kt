@@ -463,6 +463,8 @@ private fun RunningPreview(state: DrawState) {
             is DrawPhase.Sampling -> stringResource(R.string.draw_phase_step, phase.step, phase.steps) to
                 (phase.step.toFloat() / phase.steps.coerceAtLeast(1))
             DrawPhase.Decoding -> stringResource(R.string.draw_phase_decoding) to null
+            is DrawPhase.DecodingTiles -> stringResource(R.string.draw_phase_decoding) + " ${phase.tile}/${phase.tiles}" to
+                (phase.tile.toFloat() / phase.tiles.coerceAtLeast(1))
             DrawPhase.Upscaling -> stringResource(R.string.draw_phase_upscaling) to null
             else -> "" to null
         }
@@ -886,6 +888,13 @@ private fun SourceCard(
                 enabled = enabled,
             )
             Text(stringResource(R.string.img2img_strength_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SwitchRow(
+                title = stringResource(R.string.img2img_fast),
+                text = stringResource(R.string.img2img_fast_hint),
+                checked = form.img2imgFast,
+                onChange = { v -> actions.update { it.copy(img2imgFast = v) } },
+                enabled = enabled,
+            )
         }
     }
 }

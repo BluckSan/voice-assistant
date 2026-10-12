@@ -71,6 +71,7 @@ object DrawPresets {
 
     /** Запас под систему и сам UI: не планируем впритык к доступной памяти. */
     private const val MARGIN = 450L * MB
+    private const val DECODE_RESERVE = 1_500L * MB
 
     /**
      * @param availBytes сколько памяти сейчас свободно (ActivityManager.MemoryInfo.availMem);
@@ -82,7 +83,8 @@ object DrawPresets {
     ): Plan {
         val a = size.area
         val flash = samplingBytes(a, false) + MARGIN > availBytes
-        val tiled = !fastDecoder && decodeBytes(a, false) + MARGIN > availBytes
+        // полный VAE без плиток — только с большим запасом: иначе система уходит в своп и «проявление» тянется минутами
+        val tiled = !fastDecoder && decodeBytes(a, false) + MARGIN + DECODE_RESERVE > availBytes
         val upBytes = if (upscale) (size.width * size.height * 4L * 4 * 7) else 0L // float-буферы Lanczos / ESRGAN
         val peak = maxOf(samplingBytes(a, flash), if (fastDecoder) 0L else decodeBytes(a, tiled)) + upBytes
         // время на box → телефон: середина ×1.4, диапазон 0.7…1.5 от середины (Dimensity 8400 / SD 8 Gen, 4 потока)

@@ -47,6 +47,11 @@ data class DrawForm(
     val translatedPrompt: String? = null,
     /** img2img: насколько сильно менять фото (0.2 — чуть-чуть, 0.9 — почти заново). */
     val strength: Float = 0.55f,
+    /**
+     * img2img: TAESD для кодирования и «проявления». Полный VAE на 512×768 просит ~2.5 ГБ буфера
+     * и на телефоне под нехваткой памяти проявлял 3+ минуты; TAESD — ~9 с (замер на ПК), памяти почти не берёт.
+     */
+    val img2imgFast: Boolean = true,
 )
 
 sealed interface DrawPhase {
@@ -58,6 +63,8 @@ sealed interface DrawPhase {
     data object Cancelling : DrawPhase
     data class Sampling(val step: Int, val steps: Int) : DrawPhase
     data object Decoding : DrawPhase
+    /** Проявление плитками (полный VAE): реальный прогресс. */
+    data class DecodingTiles(val tile: Int, val tiles: Int) : DrawPhase
     data object Upscaling : DrawPhase
     data class Error(val message: String) : DrawPhase
 }
@@ -87,7 +94,7 @@ data class DrawState(
     val startedAt: Long = 0,
 ) {
     val running get() = phase is DrawPhase.LoadingModel || phase is DrawPhase.Translating || phase is DrawPhase.Cancelling || phase is DrawPhase.Sampling ||
-        phase is DrawPhase.Decoding || phase is DrawPhase.Upscaling
+        phase is DrawPhase.Decoding || phase is DrawPhase.DecodingTiles || phase is DrawPhase.Upscaling
 }
 
 data class ImageModelDownloadState(
@@ -352,6 +359,7 @@ class DrawController(
         val strength = f.strength.coerceIn(0.2f, 0.9f)
         val steps = if (src != null) InitImage.stepsFor(baseSteps, strength) else baseSteps
         val initRgb = src?.let { InitImage.toRgb(it) }
+        val fastDecoder = if (src != null) f.img2imgFast else f.fastDecoder
         releaseJob?.cancel()
         cancelRequested = false
         StableDiffusionNative.nativeResetAbort()
@@ -370,9 +378,10 @@ class DrawController(
                 // нейросеть-собеседник и Whisper выгружаем: вместе с SD они не влезут в память
                 com.hakkiiler.voiceassistant.data.ai.HeavyModelGuard.beforeDraw()
                 val result = withContext(nativeDispatcher) {
-                    val plan = planFor(f, size, steps)
+                    val plan = planFor(f.copy(fastDecoder = fastDecoder), size, steps)
                     ensureMemory(plan)
-                    val handle = ensureContext(f.fastDecoder, plan.flashAttn)
+                    Log.i(TAG, "plan: ${size.width}x${size.height} steps=$steps img2img=${src != null} taesd=$fastDecoder tiling=${plan.vaeTiling} flash=${plan.flashAttn} threads=${threadCount()}")
+                    val handle = ensureContext(fastDecoder, plan.flashAttn)
                     if (cancelRequested) throw CancellationException("cancelled")
                     activeCtx = handle
                     _state.update { it.copy(phase = DrawPhase.Sampling(0, steps)) }
@@ -382,8 +391,14 @@ class DrawController(
                             handle, prompt, f.negativePrompt.trim(), size.width, size.height, steps, f.cfg, seed,
                             ImageModelSource.SAMPLER, plan.vaeTiling, initRgb, strength,
                         ) { step, total, _ ->
-                            // при img2img шагов выполняется меньше (≈ steps × strength); плитки VAE тоже шлют прогресс — их отсекаем
-                            val sampling = if (initRgb == null) total == steps else total in 1..steps && _state.value.phase !is DrawPhase.Decoding
+                            // плитки VAE тоже шлют прогресс: после сэмплинга это «проявление»
+                            val ph = _state.value.phase
+                            if ((ph is DrawPhase.Decoding || ph is DrawPhase.DecodingTiles) && !cancelRequested) {
+                                _state.update { it.copy(phase = DrawPhase.DecodingTiles(step, total)) }
+                                return@nativeGenerate
+                            }
+                            // при img2img шагов выполняется меньше (≈ steps × strength)
+                            val sampling = if (initRgb == null) total == steps else total in 1..steps && ph is DrawPhase.Sampling
                             if (sampling && !cancelRequested) {
                                 _state.update { s ->
                                     s.copy(phase = if (step >= total) DrawPhase.Decoding else DrawPhase.Sampling(step, total))

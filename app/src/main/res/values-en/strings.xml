@@ -185,4 +185,6 @@
     <string name="img2img_other_way">Pick via Files</string>
     <string name="img2img_share_log">Share log</string>
     <string name="img2img_files">From files</string>
+    <string name="img2img_fast">Fast decoding (TAESD)</string>
+    <string name="img2img_fast_hint">Seconds instead of minutes, little RAM; slightly softer details.</string>
 </resources>
