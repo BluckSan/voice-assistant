@@ -183,6 +183,31 @@ class AiController(private val context: Context, private val scope: CoroutineSco
         }
     }
 
+    /**
+     * Перевести запрос на рисование в английский промпт для SD (без истории, жадно, без вывода в чат).
+     * Память под SD освобождает вызывающий (DrawController); после — LLM выгружается перед рисованием.
+     */
+    suspend fun writeDrawPrompt(request: String): String? {
+        if (!llmReady) return null
+        llmRelease?.cancel()
+        return withContext(llmThread) {
+            if (llmCtx == 0L) {
+                ensureMemory()
+                llmCtx = LlamaNative.nativeOpen(downloader.file(AiModelSource.LLM).absolutePath, N_CTX, threads())
+                if (llmCtx == 0L) return@withContext null
+            }
+            activeLlm = llmCtx
+            try {
+                val w = com.hakkiiler.voiceassistant.domain.image.DrawPromptWriter
+                val roles = arrayOf("system") + w.EXAMPLES.flatMap { listOf("user", "assistant") } + "user"
+                val contents = arrayOf(w.SYSTEM) + w.EXAMPLES.flatMap { listOf(it.first, it.second) } + request
+                LlamaNative.nativeChat(llmCtx, roles, contents, 96, 0f, null)?.toString(Charsets.UTF_8)
+            } finally {
+                activeLlm = 0
+            }
+        }
+    }
+
     private fun run(system: String, msgs: List<ChatMessage>): String? {
         val roles = arrayOf("system") + msgs.map { if (it.fromUser) "user" else "assistant" }
         val contents = arrayOf(system) + msgs.map { it.text }

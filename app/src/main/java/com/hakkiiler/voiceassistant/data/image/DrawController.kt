@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.hakkiiler.voiceassistant.domain.image.DrawPromptWriter
 import java.util.concurrent.Executors
 import kotlin.random.Random
 
@@ -42,11 +43,17 @@ data class DrawForm(
     val neuralUpscale: Boolean = false,
     /** Что было сказано голосом, если запрос переведён с русского. */
     val spokenPrompt: String? = null,
+    /** Английский запрос, по которому реально рисовала модель (если исходный был на русском). */
+    val translatedPrompt: String? = null,
 )
 
 sealed interface DrawPhase {
     data object Idle : DrawPhase
+    /** Перевод русского запроса на английский (нейросеть или словарь). */
+    data object Translating : DrawPhase
     data object LoadingModel : DrawPhase
+    /** Нажали «Отмена»: ждём, пока нативный код остановится на ближайшем шаге. */
+    data object Cancelling : DrawPhase
     data class Sampling(val step: Int, val steps: Int) : DrawPhase
     data object Decoding : DrawPhase
     data object Upscaling : DrawPhase
@@ -72,7 +79,7 @@ data class DrawState(
     val result: DrawResult? = null,
     val startedAt: Long = 0,
 ) {
-    val running get() = phase is DrawPhase.LoadingModel || phase is DrawPhase.Sampling ||
+    val running get() = phase is DrawPhase.LoadingModel || phase is DrawPhase.Translating || phase is DrawPhase.Cancelling || phase is DrawPhase.Sampling ||
         phase is DrawPhase.Decoding || phase is DrawPhase.Upscaling
 }
 
@@ -245,9 +252,9 @@ class DrawController(
     /** @return null, если запущено; иначе текст ошибки для показа. */
     fun generate(): String? {
         val f = _form.value
-        val prompt = f.prompt.trim()
-        if (prompt.isEmpty()) return "Опиши, что нарисовать / Enter a prompt"
-        if (!safety.isAllowed(prompt, f.negativePrompt, f.spokenPrompt)) {
+        val original = f.prompt.trim()
+        if (original.isEmpty()) return "Опиши, что нарисовать / Enter a prompt"
+        if (!safety.isAllowed(original, f.negativePrompt, f.spokenPrompt)) {
             val msg = "Запрос отклонён: похоже на незаконный контент с несовершеннолетними. / Refused: illegal content involving minors."
             _state.update { it.copy(phase = DrawPhase.Error(msg)) }
             return msg
@@ -260,15 +267,27 @@ class DrawController(
         val size = f.size.takeIf { it in DrawPresets.SIZES } ?: DrawPresets.DEFAULT_SIZE
         val steps = f.steps.coerceIn(DrawPresets.STEPS.first, DrawPresets.STEPS.last)
         releaseJob?.cancel()
-        _state.update { it.copy(phase = DrawPhase.LoadingModel, startedAt = System.currentTimeMillis()) }
+        cancelRequested = false
+        StableDiffusionNative.nativeResetAbort()
+        val needsTr = translator.needsTranslation(original)
+        _state.update { it.copy(phase = if (needsTr) DrawPhase.Translating else DrawPhase.LoadingModel, startedAt = System.currentTimeMillis()) }
         drawJob = scope.launch {
             try {
+                // CLIP в SD 1.5 понимает только английский: русский запрос переводим (нейросетью, иначе словарём)
+                val prompt = if (needsTr) translatePrompt(original) else original
+                _form.update { if (it.prompt.trim() == original) it.copy(translatedPrompt = prompt.takeIf { needsTr }) else it }
+                if (!safety.isAllowed(prompt, f.negativePrompt, original)) {
+                    error("Запрос отклонён: похоже на незаконный контент с несовершеннолетними. / Refused.")
+                }
+                if (cancelRequested) throw CancellationException("cancelled")
+                _state.update { it.copy(phase = DrawPhase.LoadingModel) }
                 // нейросеть-собеседник и Whisper выгружаем: вместе с SD они не влезут в память
                 com.hakkiiler.voiceassistant.data.ai.HeavyModelGuard.beforeDraw()
                 val result = withContext(nativeDispatcher) {
                     val plan = planFor(f, size, steps)
                     ensureMemory(plan)
                     val handle = ensureContext(f.fastDecoder, plan.flashAttn)
+                    if (cancelRequested) throw CancellationException("cancelled")
                     activeCtx = handle
                     _state.update { it.copy(phase = DrawPhase.Sampling(0, steps)) }
                     val started = System.currentTimeMillis()
@@ -277,7 +296,7 @@ class DrawController(
                             handle, prompt, f.negativePrompt.trim(), size.width, size.height, steps, f.cfg, seed,
                             ImageModelSource.SAMPLER, plan.vaeTiling,
                         ) { step, total, _ ->
-                            if (total == steps) {
+                            if (total == steps && !cancelRequested) {
                                 _state.update { s ->
                                     s.copy(phase = if (step >= total) DrawPhase.Decoding else DrawPhase.Sampling(step, total))
                                 }
@@ -289,7 +308,7 @@ class DrawController(
                     if (cancelRequested) throw CancellationException("cancelled")
                     rgb ?: throw IllegalStateException(nativeError("Генерация не удалась / Generation failed"))
                     var bitmap = toBitmap(rgb, size.width, size.height)
-                    if (f.upscale) {
+                    if (f.upscale && !cancelRequested) {
                         _state.update { it.copy(phase = DrawPhase.Upscaling) }
                         bitmap = upscale(rgb, bitmap, size, f.neuralUpscale)
                     }
@@ -305,7 +324,9 @@ class DrawController(
                 _state.update { it.copy(phase = DrawPhase.Error(LOW_MEMORY)) }
             } catch (e: Exception) {
                 Log.e(TAG, "generation failed", e)
-                _state.update { it.copy(phase = DrawPhase.Error(e.message ?: e.javaClass.simpleName)) }
+                _state.update {
+                    it.copy(phase = if (cancelRequested) DrawPhase.Idle else DrawPhase.Error(e.message ?: e.javaClass.simpleName))
+                }
             } finally {
                 cancelRequested = false
                 scheduleRelease()
@@ -393,10 +414,27 @@ class DrawController(
     @Volatile private var cancelRequested = false
 
     fun cancel() {
-        if (!_state.value.running) return
+        if (!_state.value.running || _state.value.phase == DrawPhase.Cancelling) return
         cancelRequested = true
-        activeCtx.takeIf { it != 0L }?.let { StableDiffusionNative.nativeCancel(it) }
-        // загрузку контекста прервать нельзя — отмена сработает сразу после неё
+        // флаг в нативном коде: сработает на ближайшем шаге, даже если сейчас грузится модель
+        if (unsupportedReason == null) StableDiffusionNative.nativeCancel(activeCtx)
+        promptCancel?.invoke()
+        _state.update { it.copy(phase = DrawPhase.Cancelling) }
+    }
+
+    /** Перевод запроса нейросетью (задаёт AppContainer, если LLM скачана). null — использовать словарь. */
+    @Volatile var llmPromptWriter: (suspend (String) -> String?)? = null
+    @Volatile var promptCancel: (() -> Unit)? = null
+
+    private suspend fun translatePrompt(original: String): String {
+        val writer = llmPromptWriter
+        // SD и LLM вместе в память не влезут: перед загрузкой LLM отпускаем модель рисования
+        if (writer != null) withContext(nativeDispatcher) { freeContext() }
+        val llm = runCatching { writer?.invoke(DrawPromptWriter.stripCommand(original)) }
+            .onFailure { if (it is CancellationException) throw it; Log.w(TAG, "llm prompt", it) }.getOrNull()
+        if (cancelRequested) throw CancellationException("cancelled")
+        val cleaned = llm?.let(DrawPromptWriter::cleanLlmOutput)
+        return cleaned ?: DrawPromptWriter.fallback(original, translator)
     }
 
     fun clearError() = _state.update { if (it.phase is DrawPhase.Error) it.copy(phase = DrawPhase.Idle) else it }
@@ -496,14 +534,8 @@ class DrawController(
         if (_state.value.running) return DrawLauncher.Result.BUSY
         _openRequest.value = true
         if (prompt == null) return DrawLauncher.Result.OPENED
-        val english = translator.translate(prompt)
-        _form.update {
-            it.copy(
-                prompt = english.ifBlank { prompt },
-                spokenPrompt = if (translator.needsTranslation(prompt)) prompt else null,
-                seed = -1,
-            )
-        }
+        // перевод на английский — в generate(): нейросетью, если скачана, иначе словарём
+        _form.update { it.copy(prompt = prompt, spokenPrompt = null, translatedPrompt = null, seed = -1) }
         if (!_installed.value) return DrawLauncher.Result.NEEDS_MODEL
         return if (generate() == null) DrawLauncher.Result.STARTED else DrawLauncher.Result.BUSY
     }
@@ -517,10 +549,27 @@ class DrawController(
         const val MAX_GALLERY = 24
         const val UPSCALE_TILE = 128
 
-        fun threadCount(): Int {
+        /**
+         * Сколько потоков: только «быстрые» ядра (частота ≥ 60% от максимальной).
+         * Dimensity 8400 — все 8 ядер Cortex-A725 (3.25/3.0/2.1 ГГц), раньше брали лишь 4 — шаг шёл ~1.6× медленнее.
+         * Одно ядро оставляем системе и интерфейсу.
+         */
+        fun threadCount(): Int = cachedThreads
+
+        private val cachedThreads: Int by lazy {
             val cores = Runtime.getRuntime().availableProcessors()
-            // у телефонов 1+3+4 ядра: медленные «маленькие» ядра только тормозят общий шаг
-            return if (cores >= 8) 4 else (cores / 2).coerceAtLeast(2)
+            val freqs = (0 until cores).mapNotNull { i ->
+                runCatching { File("/sys/devices/system/cpu/cpu$i/cpufreq/cpuinfo_max_freq").readText().trim().toLong() }.getOrNull()
+            }
+            val fast = if (freqs.size == cores && freqs.isNotEmpty()) {
+                val max = freqs.max()
+                freqs.count { it >= max * 0.6 }
+            } else cores / 2
+            when {
+                fast >= 8 -> 7
+                fast >= 6 -> fast
+                else -> fast.coerceAtLeast(4).coerceAtMost(cores)
+            }.also { Log.i(TAG, "threads=$it (cores=$cores, freqs=$freqs)") }
         }
     }
 }

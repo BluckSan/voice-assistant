@@ -57,6 +57,9 @@ class AppContainer(context: Context) {
     init {
         HeavyModelGuard.unloadChat = { ai.unloadAll() }
         HeavyModelGuard.releaseDraw = { draw.releaseForOtherModel() }
+        // русский запрос на рисование → английский промпт силами LLM (если скачана)
+        draw.llmPromptWriter = { text -> if (ai.llmReady) ai.writeDrawPrompt(text) else null }
+        draw.promptCancel = { ai.cancelChat() }
     }
 
     /** Состояние ассистента, общее для сервиса, оверлея и UI. */

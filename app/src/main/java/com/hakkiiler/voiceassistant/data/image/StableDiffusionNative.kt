@@ -48,7 +48,9 @@ object StableDiffusionNative {
     external fun nativeLastError(): String
     external fun nativeCreate(modelPath: String, taesdPath: String?, threads: Int, mmap: Boolean, flashAttn: Boolean): Long
     external fun nativeFree(ctx: Long)
+    /** Отмена в любой момент (флаг проверяется на каждом шаге и перед стартом). */
     external fun nativeCancel(ctx: Long)
+    external fun nativeResetAbort()
     external fun nativeGenerate(
         ctx: Long, prompt: String, negative: String,
         width: Int, height: Int, steps: Int, cfg: Float, seed: Long,

@@ -165,4 +165,7 @@
     <string name="ai_thinking">Думаю…</string>
     <string name="ai_loading_model">Загружаю нейросеть в память…</string>
     <string name="action_stop_answer">Стоп</string>
+    <string name="draw_translated">Модель рисует по английскому запросу</string>
+    <string name="draw_phase_translating">Перевожу запрос на английский…</string>
+    <string name="draw_phase_cancelling">Останавливаю…</string>
 </resources>

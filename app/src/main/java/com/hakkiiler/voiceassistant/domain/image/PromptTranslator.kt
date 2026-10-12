@@ -8,7 +8,12 @@ import com.hakkiiler.voiceassistant.domain.parser.Text
  * «нарисуй кота в космосе» превращается в "cat in space". Результат пользователь видит и может поправить.
  * Словарь: `app/src/main/resources/prompt/ru_en.txt`.
  */
-class PromptTranslator(private val exact: Map<String, String>, stems: Map<String, String>) {
+class PromptTranslator(
+    private val exact: Map<String, String>,
+    stems: Map<String, String>,
+    phrases: Map<String, String> = emptyMap(),
+) {
+    private val phrasesByLength = phrases.entries.sortedByDescending { it.key.length }
     private val stemsByLength = stems.entries.sortedByDescending { it.key.length }
 
     fun needsTranslation(text: String) = text.any { it in 'а'..'я' || it in 'А'..'Я' || it == 'ё' || it == 'Ё' }
@@ -16,8 +21,11 @@ class PromptTranslator(private val exact: Map<String, String>, stems: Map<String
     /** Если в запросе нет кириллицы — возвращает его как есть. */
     fun translate(text: String): String {
         if (!needsTranslation(text)) return text.trim()
+        // сначала устойчивые фразы: «в полный рост» → full body shot (латиница дальше идёт как есть)
+        var src = " " + Text.normalize(text).replace('ё', 'е') + " "
+        for ((ru, en) in phrasesByLength) src = src.replace(" $ru ", " ${en.replace(",", " ,")} ")
         val out = mutableListOf<String>()
-        for (token in Text.tokens(text)) {
+        for (token in Text.tokens(src)) {
             val word = when {
                 !needsTranslation(token) -> token
                 else -> exact[token] ?: stemsByLength.firstOrNull { token.startsWith(it.key) }?.value
@@ -27,7 +35,7 @@ class PromptTranslator(private val exact: Map<String, String>, stems: Map<String
         // предлоги в конце/начале без существительного смысла не несут
         while (out.isNotEmpty() && out.last() in DANGLING) out.removeAt(out.lastIndex)
         while (out.isNotEmpty() && out.first() in DANGLING) out.removeAt(0)
-        return out.joinToString(" ")
+        return out.joinToString(" ").replace(" ,", ",")
     }
 
     companion object {
@@ -37,6 +45,7 @@ class PromptTranslator(private val exact: Map<String, String>, stems: Map<String
         fun parse(config: String): PromptTranslator {
             val exact = mutableMapOf<String, String>()
             val stems = mutableMapOf<String, String>()
+            val phrases = mutableMapOf<String, String>()
             for (raw in config.lineSequence()) {
                 val line = raw.trim()
                 if (line.isEmpty() || line.startsWith("#")) continue
@@ -45,9 +54,13 @@ class PromptTranslator(private val exact: Map<String, String>, stems: Map<String
                 val key = line.substring(0, eq).trim().lowercase().replace('ё', 'е')
                 val value = line.substring(eq + 1).trim()
                 if (value.isEmpty()) continue
-                if (key.endsWith("*")) stems[key.dropLast(1)] = value else exact[key] = value
+                when {
+                    key.contains(' ') -> phrases[key] = value
+                    key.endsWith("*") -> stems[key.dropLast(1)] = value
+                    else -> exact[key] = value
+                }
             }
-            return PromptTranslator(exact, stems)
+            return PromptTranslator(exact, stems, phrases)
         }
 
         val default: PromptTranslator by lazy {

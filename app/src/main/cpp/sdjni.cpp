@@ -20,6 +20,10 @@ std::string g_last_error;
 
 // Текущий слушатель прогресса (глобальный в sd.cpp, у нас всё равно одна генерация за раз).
 jobject g_listener = nullptr;
+// Отмена: флаг ставит Kotlin (nativeAbort) в любой момент — даже во время загрузки модели.
+// sd.cpp сбрасывает свой флаг в начале generate_image, поэтому повторяем отмену в колбэке каждого шага.
+std::atomic<bool> g_abort{false};
+std::atomic<sd_ctx_t*> g_running_ctx{nullptr};
 jmethodID g_on_progress = nullptr;
 std::mutex g_listener_mutex;
 
@@ -41,6 +45,9 @@ void log_cb(enum sd_log_level_t level, const char* text, void*) {
 }
 
 void progress_cb(int step, int steps, float time, void*) {
+    if (g_abort.load()) {
+        if (sd_ctx_t* c = g_running_ctx.load()) sd_cancel_generation(c, SD_CANCEL_ALL);
+    }
     std::lock_guard<std::mutex> lock(g_listener_mutex);
     if (!g_listener || !g_vm) return;
     JNIEnv* env = nullptr;
@@ -121,7 +128,14 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeFree(JN
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeCancel(JNIEnv*, jobject, jlong ctx) {
+    g_abort = true;
     if (ctx) sd_cancel_generation(reinterpret_cast<sd_ctx_t*>(ctx), SD_CANCEL_ALL);
+}
+
+/** Сбросить флаг отмены перед новой генерацией. */
+extern "C" JNIEXPORT void JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeResetAbort(JNIEnv*, jobject) {
+    g_abort = false;
 }
 
 /** @return RGB-байты width*height*3 или null при ошибке/отмене. */
@@ -133,7 +147,9 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGenerat
     auto* ctx = reinterpret_cast<sd_ctx_t*>(handle);
     if (!ctx) return nullptr;
     clear_error();
+    if (g_abort.load()) return nullptr;  // отменили, пока грузилась модель
     sd_cancel_generation(ctx, SD_CANCEL_RESET);
+    g_running_ctx = ctx;
 
     std::string prompt = to_string(env, jprompt);
     std::string negative = to_string(env, jnegative);
@@ -169,6 +185,8 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGenerat
     sd_image_t* images = nullptr;
     int count = 0;
     bool ok = generate_image(ctx, &gp, &images, &count);
+    g_running_ctx = nullptr;
+    if (g_abort.load()) ok = false;
 
     {
         std::lock_guard<std::mutex> lock(g_listener_mutex);

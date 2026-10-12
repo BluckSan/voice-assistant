@@ -326,7 +326,11 @@ private fun PreviewCard(form: DrawForm, state: DrawState, actions: DrawActions) 
             }
             if (result != null && !state.running) ResultActions(result, actions)
             if (state.running) {
-                OutlinedButton(onClick = actions.cancel, modifier = Modifier.fillMaxWidth().padding(Spacing.m)) {
+                OutlinedButton(
+                    onClick = actions.cancel,
+                    enabled = state.phase != DrawPhase.Cancelling,
+                    modifier = Modifier.fillMaxWidth().padding(Spacing.m),
+                ) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
@@ -370,6 +374,8 @@ private fun RunningPreview(state: DrawState) {
     ) {
         val phase = state.phase
         val (label, fraction) = when (phase) {
+            DrawPhase.Translating -> stringResource(R.string.draw_phase_translating) to null
+            DrawPhase.Cancelling -> stringResource(R.string.draw_phase_cancelling) to null
             DrawPhase.LoadingModel -> stringResource(R.string.draw_phase_loading) to null
             is DrawPhase.Sampling -> stringResource(R.string.draw_phase_step, phase.step, phase.steps) to
                 (phase.step.toFloat() / phase.steps.coerceAtLeast(1))
@@ -485,7 +491,7 @@ private fun PromptCard(form: DrawForm, state: DrawState, installed: Boolean, act
     SectionCard(title = stringResource(R.string.draw_prompt_title), icon = painterResource(R.drawable.ic_sparkle)) {
         OutlinedTextField(
             value = form.prompt,
-            onValueChange = { v -> actions.update { it.copy(prompt = v, spokenPrompt = null) } },
+            onValueChange = { v -> actions.update { it.copy(prompt = v, spokenPrompt = null, translatedPrompt = null) } },
             placeholder = { Text(stringResource(R.string.draw_prompt_placeholder)) },
             supportingText = { Text(stringResource(R.string.draw_prompt_hint)) },
             modifier = Modifier.fillMaxWidth(),
@@ -494,6 +500,7 @@ private fun PromptCard(form: DrawForm, state: DrawState, installed: Boolean, act
             shape = MaterialTheme.shapes.medium,
         )
         form.spokenPrompt?.let { Banner(stringResource(R.string.draw_spoken, it), tone = BannerTone.Info) }
+        form.translatedPrompt?.let { Banner(it, title = stringResource(R.string.draw_translated), tone = BannerTone.Info) }
         Button(
             onClick = { actions.generate() },
             enabled = installed && form.prompt.isNotBlank() && !state.running,

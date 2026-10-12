@@ -165,4 +165,7 @@
     <string name="ai_thinking">Thinking…</string>
     <string name="ai_loading_model">Loading the model into memory…</string>
     <string name="action_stop_answer">Stop</string>
+    <string name="draw_translated">The model draws from this English prompt</string>
+    <string name="draw_phase_translating">Translating the prompt…</string>
+    <string name="draw_phase_cancelling">Stopping…</string>
 </resources>
