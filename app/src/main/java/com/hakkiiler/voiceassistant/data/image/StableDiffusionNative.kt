@@ -55,6 +55,8 @@ object StableDiffusionNative {
         ctx: Long, prompt: String, negative: String,
         width: Int, height: Int, steps: Int, cfg: Float, seed: Long,
         sampler: String, vaeTiling: Boolean,
+        /** img2img: RGB width*height*3 или null для txt2img */
+        initRgb: ByteArray?, strength: Float,
         listener: ProgressListener?,
     ): ByteArray?
 

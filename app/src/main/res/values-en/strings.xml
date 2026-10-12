@@ -168,4 +168,13 @@
     <string name="draw_translated">The model draws from this English prompt</string>
     <string name="draw_phase_translating">Translating the prompt…</string>
     <string name="draw_phase_cancelling">Stopping…</string>
+    <string name="img2img_title">Edit a photo</string>
+    <string name="img2img_hint">Pick a photo or take one, then describe the change: "in armor", "anime style"</string>
+    <string name="img2img_selected">Photo %1$d×%2$d — describe the change</string>
+    <string name="img2img_strength">Change strength: %1$d%%</string>
+    <string name="img2img_strength_hint">Lower keeps the original, higher changes more</string>
+    <string name="img2img_gallery">Gallery</string>
+    <string name="img2img_camera">Camera</string>
+    <string name="img2img_before">Before</string>
+    <string name="img2img_after">After</string>
 </resources>

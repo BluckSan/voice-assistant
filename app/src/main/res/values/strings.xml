@@ -168,4 +168,13 @@
     <string name="draw_translated">Модель рисует по английскому запросу</string>
     <string name="draw_phase_translating">Перевожу запрос на английский…</string>
     <string name="draw_phase_cancelling">Останавливаю…</string>
+    <string name="img2img_title">Изменить фото</string>
+    <string name="img2img_hint">Выбери фото или сними камерой, опиши, что изменить: «в доспехах», «в стиле аниме»</string>
+    <string name="img2img_selected">Фото %1$d×%2$d — опиши, что изменить</string>
+    <string name="img2img_strength">Сила изменений: %1$d%%</string>
+    <string name="img2img_strength_hint">Меньше — похоже на исходник, больше — свободнее</string>
+    <string name="img2img_gallery">Из галереи</string>
+    <string name="img2img_camera">Камера</string>
+    <string name="img2img_before">До</string>
+    <string name="img2img_after">После</string>
 </resources>

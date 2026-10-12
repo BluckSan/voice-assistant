@@ -45,6 +45,8 @@ data class DrawForm(
     val spokenPrompt: String? = null,
     /** Английский запрос, по которому реально рисовала модель (если исходный был на русском). */
     val translatedPrompt: String? = null,
+    /** img2img: насколько сильно менять фото (0.2 — чуть-чуть, 0.9 — почти заново). */
+    val strength: Float = 0.55f,
 )
 
 sealed interface DrawPhase {
@@ -69,6 +71,8 @@ data class DrawResult(
     val steps: Int,
     val millis: Long,
     val file: File? = null,
+    /** Исходное фото (img2img) — для сравнения «до / после». */
+    val source: Bitmap? = null,
 )
 
 /** Картинка из истории (лента последних работ). */
@@ -157,6 +161,23 @@ class DrawController(
     private var releaseJob: Job? = null
 
     fun updateForm(transform: (DrawForm) -> DrawForm) = _form.update(transform)
+
+    /** Фото для img2img, уже повёрнутое по EXIF и подогнанное под размер модели. null — обычное рисование. */
+    private val _source = MutableStateFlow<Bitmap?>(null)
+    val source: StateFlow<Bitmap?> = _source
+    private val _sourceError = MutableStateFlow<String?>(null)
+    val sourceError: StateFlow<String?> = _sourceError
+
+    fun setSource(uri: android.net.Uri) {
+        if (_state.value.running) return
+        scope.launch {
+            runCatching { InitImage.load(context, uri) }
+                .onSuccess { _source.value = it; _sourceError.value = null }
+                .onFailure { Log.w(TAG, "source", it); _sourceError.value = it.message ?: "Не удалось открыть фото" }
+        }
+    }
+
+    fun clearSource() { if (!_state.value.running) _source.value = null }
 
     // ---------------- загрузка модели ----------------
 
@@ -264,8 +285,13 @@ class DrawController(
         if (_state.value.running) return "Уже рисую / Already drawing"
 
         val seed = if (f.seed >= 0) f.seed else Random.nextLong(0, Int.MAX_VALUE.toLong())
-        val size = f.size.takeIf { it in DrawPresets.SIZES } ?: DrawPresets.DEFAULT_SIZE
-        val steps = f.steps.coerceIn(DrawPresets.STEPS.first, DrawPresets.STEPS.last)
+        val src = _source.value
+        val size = if (src != null) DrawSize(src.width, src.height)
+            else f.size.takeIf { it in DrawPresets.SIZES } ?: DrawPresets.DEFAULT_SIZE
+        val baseSteps = f.steps.coerceIn(DrawPresets.STEPS.first, DrawPresets.STEPS.last)
+        val strength = f.strength.coerceIn(0.2f, 0.9f)
+        val steps = if (src != null) InitImage.stepsFor(baseSteps, strength) else baseSteps
+        val initRgb = src?.let { InitImage.toRgb(it) }
         releaseJob?.cancel()
         cancelRequested = false
         StableDiffusionNative.nativeResetAbort()
@@ -294,9 +320,11 @@ class DrawController(
                     val rgb = try {
                         StableDiffusionNative.nativeGenerate(
                             handle, prompt, f.negativePrompt.trim(), size.width, size.height, steps, f.cfg, seed,
-                            ImageModelSource.SAMPLER, plan.vaeTiling,
+                            ImageModelSource.SAMPLER, plan.vaeTiling, initRgb, strength,
                         ) { step, total, _ ->
-                            if (total == steps && !cancelRequested) {
+                            // при img2img шагов выполняется меньше (≈ steps × strength); плитки VAE тоже шлют прогресс — их отсекаем
+                            val sampling = if (initRgb == null) total == steps else total in 1..steps && _state.value.phase !is DrawPhase.Decoding
+                            if (sampling && !cancelRequested) {
                                 _state.update { s ->
                                     s.copy(phase = if (step >= total) DrawPhase.Decoding else DrawPhase.Sampling(step, total))
                                 }
@@ -314,7 +342,7 @@ class DrawController(
                     }
                     if (cancelRequested) throw CancellationException("cancelled")
                     val file = runCatching { saveToHistory(bitmap, prompt) }.onFailure { Log.w(TAG, "history", it) }.getOrNull()
-                    DrawResult(bitmap, prompt, seed, bitmap.width, bitmap.height, steps, System.currentTimeMillis() - started, file)
+                    DrawResult(bitmap, prompt, seed, bitmap.width, bitmap.height, steps, System.currentTimeMillis() - started, file, source = src)
                 }
                 _state.value = DrawState(phase = DrawPhase.Idle, result = result)
             } catch (e: CancellationException) {

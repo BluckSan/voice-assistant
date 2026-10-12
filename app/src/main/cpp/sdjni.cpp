@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "stable-diffusion.h"
 
@@ -143,7 +144,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGenerate(
         JNIEnv* env, jobject, jlong handle, jstring jprompt, jstring jnegative,
         jint width, jint height, jint steps, jfloat cfg, jlong seed, jstring jsampler, jboolean vae_tiling,
-        jobject listener) {
+        jbyteArray init_rgb, jfloat strength, jobject listener) {
     auto* ctx = reinterpret_cast<sd_ctx_t*>(handle);
     if (!ctx) return nullptr;
     clear_error();
@@ -181,6 +182,18 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGenerat
     }
     // большие картинки декодируем плитками, чтобы VAE не съел всю память
     gp.vae_tiling_params.enabled = vae_tiling;
+
+    // img2img: исходное фото RGB того же размера; strength — насколько сильно менять (0..1)
+    std::vector<uint8_t> init_buf;
+    if (init_rgb) {
+        jsize n = env->GetArrayLength(init_rgb);
+        if (n == width * height * 3) {
+            init_buf.resize(n);
+            env->GetByteArrayRegion(init_rgb, 0, n, reinterpret_cast<jbyte*>(init_buf.data()));
+            gp.init_image = sd_image_t{static_cast<uint32_t>(width), static_cast<uint32_t>(height), 3, init_buf.data()};
+            gp.strength = strength;
+        }
+    }
 
     sd_image_t* images = nullptr;
     int count = 0;

@@ -1,6 +1,9 @@
 package com.hakkiiler.voiceassistant.ui.screens
 
 import android.Manifest
+import com.hakkiiler.voiceassistant.ui.components.StatusPill
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.draw.drawWithContent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -134,6 +137,9 @@ class DrawActions(
     val deleteGallery: (GalleryItem) -> Unit = {},
     val save: (DrawResult) -> Unit = {},
     val share: (DrawResult) -> Unit = {},
+    val pickPhoto: () -> Unit = {},
+    val takePhoto: () -> Unit = {},
+    val clearSource: () -> Unit = {},
 )
 
 /**
@@ -149,7 +155,17 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
     val dl by draw.download.collectAsStateWithLifecycle()
     val upscaler by draw.upscaler.collectAsStateWithLifecycle()
     val gallery by draw.gallery.collectAsStateWithLifecycle()
+    val source by draw.source.collectAsStateWithLifecycle()
+    val sourceError by draw.sourceError.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    // img2img: выбор фото (системный photo picker, разрешения не нужны) или снимок камерой во временный файл
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let { draw.setSource(it) } }
+    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val u = cameraUri
+        if (ok && u != null) draw.setSource(u)
+    }
+    LaunchedEffect(sourceError) { sourceError?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() } }
     val scope = rememberCoroutineScope()
 
     // пока рисуем — экран не гаснет (генерация идёт на CPU несколько минут)
@@ -182,6 +198,7 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
         download = dl,
         upscaler = upscaler,
         gallery = gallery,
+        source = source,
         unsupportedReason = draw.unsupportedReason,
         plan = remember(form, upscaler.installed, state.running) { draw.planFor(form) },
         actions = DrawActions(
@@ -199,6 +216,17 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
                     ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
                 if (legacy) { pendingSave = r; permission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE) } else doSave(r)
             },
+            pickPhoto = { picker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            takePhoto = {
+                runCatching {
+                    val dir = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
+                    val file = java.io.File(dir, "photo.jpg")
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", file)
+                    cameraUri = uri
+                    camera.launch(uri)
+                }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }
+            },
+            clearSource = { draw.clearSource() },
             share = { r ->
                 scope.launch {
                     runCatching { ImageSaver.share(context, r.bitmap, r.prompt) }
@@ -219,6 +247,7 @@ fun DrawContent(
     upscaler: UpscalerState,
     gallery: List<GalleryItem>,
     unsupportedReason: String?,
+    source: Bitmap? = null,
     actions: DrawActions,
     modifier: Modifier = Modifier,
     plan: DrawPresets.Plan = DrawPresets.plan(
@@ -242,9 +271,12 @@ fun DrawContent(
 
         if (gallery.isNotEmpty()) GalleryStrip(gallery, state.result?.file, enabled = !state.running, actions)
 
+        SourceCard(form, source, enabled = !state.running, actions)
+
         PromptCard(form, state, installed, actions)
 
-        SizeCard(form, plan, upscaler, enabled = !state.running, actions)
+        // для img2img размер задаёт фото
+        if (source == null) SizeCard(form, plan, upscaler, enabled = !state.running, actions)
 
         AdvancedCard(form, enabled = !state.running, actions)
 
@@ -309,6 +341,7 @@ private fun PreviewCard(form: DrawForm, state: DrawState, actions: DrawActions) 
             ) {
                 when {
                     state.running -> RunningPreview(state)
+                    result != null && result.source != null -> BeforeAfter(result.source, result.bitmap)
                     result != null -> Image(
                         result.bitmap.asImageBitmap(), contentDescription = result.prompt,
                         contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
@@ -709,5 +742,74 @@ private fun AdvancedCard(form: DrawForm, enabled: Boolean, actions: DrawActions)
                 Text(stringResource(R.string.draw_reset_defaults))
             }
         }
+    }
+}
+
+
+// ---------------- img2img: исходное фото ----------------
+
+@Composable
+private fun SourceCard(form: DrawForm, source: Bitmap?, enabled: Boolean, actions: DrawActions) {
+    SectionCard(
+        title = stringResource(R.string.img2img_title),
+        icon = painterResource(R.drawable.ic_image),
+        subtitle = stringResource(if (source == null) R.string.img2img_hint else R.string.img2img_selected, source?.width ?: 0, source?.height ?: 0),
+    ) {
+        if (source != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    source.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(96.dp).clip(MaterialTheme.shapes.medium),
+                )
+                Spacer(Modifier.size(Spacing.m))
+                Column(Modifier.weight(1f)) {
+                    Text(stringResource(R.string.img2img_strength, (form.strength * 100).roundToInt()), style = MaterialTheme.typography.bodyLarge)
+                    Slider(
+                        value = form.strength,
+                        onValueChange = { v -> actions.update { it.copy(strength = (v * 20).roundToInt() / 20f) } },
+                        valueRange = 0.2f..0.9f,
+                        enabled = enabled,
+                    )
+                    Text(
+                        stringResource(R.string.img2img_strength_hint),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+            FilledTonalButton(onClick = actions.pickPhoto, enabled = enabled) { Text(stringResource(R.string.img2img_gallery)) }
+            FilledTonalButton(onClick = actions.takePhoto, enabled = enabled) { Text(stringResource(R.string.img2img_camera)) }
+            if (source != null) TextButton(onClick = actions.clearSource, enabled = enabled) { Text(stringResource(R.string.action_delete)) }
+        }
+    }
+}
+
+/** Сравнение «до / после»: тяни ползунок — слева исходное фото, справа результат. */
+@Composable
+private fun BeforeAfter(before: Bitmap, after: Bitmap) {
+    var split by remember(before, after) { mutableStateOf(0.5f) }
+    Box(Modifier.fillMaxSize()) {
+        Image(after.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        Image(
+            before.asImageBitmap(), null, contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().drawWithContent {
+                clipRect(right = size.width * split) { this@drawWithContent.drawContent() }
+            },
+        )
+        Box(
+            Modifier.fillMaxSize().drawWithContent {
+                val x = size.width * split
+                drawLine(androidx.compose.ui.graphics.Color.White, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, size.height), strokeWidth = 4f)
+            },
+        )
+        Row(Modifier.fillMaxWidth().padding(Spacing.s), horizontalArrangement = Arrangement.SpaceBetween) {
+            StatusPill(stringResource(R.string.img2img_before), MaterialTheme.colorScheme.outline)
+            StatusPill(stringResource(R.string.img2img_after), MaterialTheme.colorScheme.primary)
+        }
+        Slider(
+            value = split, onValueChange = { split = it },
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = Spacing.m),
+        )
     }
 }
