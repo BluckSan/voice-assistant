@@ -4,4 +4,6 @@
     <cache-path name="shared" path="shared/" />
     <!-- фото с камеры для img2img -->
     <cache-path name="camera" path="camera/" />
+    <!-- журнал выбора фото (Поделиться журналом) -->
+    <files-path name="logs" path="logs/" />
 </paths>

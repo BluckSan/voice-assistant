@@ -181,4 +181,8 @@
     <string name="img2img_pick">Tap to pick a photo</string>
     <string name="img2img_loading">Processing the photo…</string>
     <string name="img2img_replace">Replace</string>
+    <string name="img2img_error">Photo didn\'t load</string>
+    <string name="img2img_other_way">Pick via Files</string>
+    <string name="img2img_share_log">Share log</string>
+    <string name="img2img_files">From files</string>
 </resources>

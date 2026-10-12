@@ -181,4 +181,8 @@
     <string name="img2img_pick">Нажми, чтобы выбрать фото</string>
     <string name="img2img_loading">Обрабатываю фото…</string>
     <string name="img2img_replace">Заменить</string>
+    <string name="img2img_error">Фото не загрузилось</string>
+    <string name="img2img_other_way">Выбрать через «Файлы»</string>
+    <string name="img2img_share_log">Отправить журнал</string>
+    <string name="img2img_files">Из файлов</string>
 </resources>

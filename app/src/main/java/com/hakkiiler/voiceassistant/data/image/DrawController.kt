@@ -198,7 +198,7 @@ class DrawController(
 
     fun setSource(uri: android.net.Uri) {
         if (_state.value.running) return
-        Log.i(TAG, "img2img source picked: $uri")
+        PickLog.i(context, "picked: $uri")
         _sourceLoading.value = true
         _sourceError.value = null
         scope.launch {
@@ -216,8 +216,8 @@ class DrawController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                Log.w(TAG, "source", e)
-                _sourceError.value = "Не удалось открыть фото: ${e.message ?: e.javaClass.simpleName}"
+                PickLog.w(context, "load failed: $uri", e)
+                _sourceError.value = "${e.javaClass.simpleName}: ${e.message ?: "—"}"
             } finally {
                 _sourceLoading.value = false
             }
@@ -225,6 +225,12 @@ class DrawController(
     }
 
     fun consumeSourceError() { _sourceError.value = null }
+
+    /** Ошибка запуска выбора/камеры (нет приложения и т.п.) — показываем в карточке и пишем в журнал. */
+    fun reportPickError(what: String, e: Throwable) {
+        PickLog.w(context, what, e)
+        _sourceError.value = "$what — ${e.javaClass.simpleName}: ${e.message ?: "—"}"
+    }
 
     fun clearSource() {
         if (_state.value.running) return

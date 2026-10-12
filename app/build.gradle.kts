@@ -14,8 +14,8 @@ android {
         applicationId = "com.hakkiiler.voiceassistant"
         minSdk = 24
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.3.1"
+        versionCode = 7
+        versionName = "1.3.2"
 
         // Нативное рисование (stable-diffusion.cpp) собираем только под arm64:
         // на остальных ABI экран «Рисование» честно пишет, что устройство не поддерживается.

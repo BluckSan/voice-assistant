@@ -142,6 +142,9 @@ class DrawActions(
     val pickPhoto: () -> Unit = {},
     val takePhoto: () -> Unit = {},
     val clearSource: () -> Unit = {},
+    val pickFile: () -> Unit = {},
+    val shareLog: () -> Unit = {},
+    val dismissSourceError: () -> Unit = {},
 )
 
 /**
@@ -163,14 +166,21 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
     val sourceLoading by draw.sourceLoading.collectAsStateWithLifecycle()
     val context = LocalContext.current
     // img2img: выбор фото (системный photo picker, разрешения не нужны) или снимок камерой во временный файл
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let { draw.setSource(it) } }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) draw.setSource(uri) else com.hakkiiler.voiceassistant.data.image.PickLog.i(context, "picker: cancelled / no uri")
+    }
+    // запасной путь: системный выбор файлов (если photo picker недоступен или сломан в прошивке)
+    val getContent = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) draw.setSource(uri) else com.hakkiiler.voiceassistant.data.image.PickLog.i(context, "GET_CONTENT: cancelled / no uri")
+    }
     // rememberSaveable: пока открыта камера, Android может пересоздать экран — адрес снимка не должен потеряться
     var cameraUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val u = cameraUri
+        com.hakkiiler.voiceassistant.data.image.PickLog.i(context, "camera result ok=$ok uri=$u")
         if (ok && u != null) draw.setSource(u)
     }
-    LaunchedEffect(sourceError) { sourceError?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show(); draw.consumeSourceError() } }
+
     val scope = rememberCoroutineScope()
 
     // пока рисуем — экран не гаснет (генерация идёт на CPU несколько минут)
@@ -206,6 +216,7 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
         source = source,
         sourceInfo = sourceInfo,
         sourceLoading = sourceLoading,
+        sourceError = sourceError,
         unsupportedReason = draw.unsupportedReason,
         plan = remember(form, upscaler.installed, state.running) { draw.planFor(form) },
         actions = DrawActions(
@@ -223,15 +234,44 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
                     ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
                 if (legacy) { pendingSave = r; permission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE) } else doSave(r)
             },
-            pickPhoto = { picker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            pickPhoto = {
+                com.hakkiiler.voiceassistant.data.image.PickLog.header(context)
+                try {
+                    picker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                } catch (e: Exception) {
+                    draw.reportPickError("Фото-пикер не запустился, пробую выбор файлов", e)
+                    runCatching { getContent.launch("image/*") }.onFailure { draw.reportPickError("Выбор файлов не запустился", it) }
+                }
+            },
+            pickFile = {
+                com.hakkiiler.voiceassistant.data.image.PickLog.header(context)
+                runCatching { getContent.launch("image/*") }.onFailure { draw.reportPickError("Выбор файлов не запустился", it) }
+            },
+            shareLog = {
+                runCatching {
+                    val f = com.hakkiiler.voiceassistant.data.image.PickLog.file(context)
+                    if (!f.exists()) f.writeText("empty\n")
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", f)
+                    context.startActivity(
+                        android.content.Intent.createChooser(
+                            android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+                                .putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                            null,
+                        ),
+                    )
+                }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }
+            },
+            dismissSourceError = { draw.consumeSourceError() },
             takePhoto = {
                 runCatching {
                     val dir = java.io.File(context.cacheDir, "camera").apply { mkdirs() }
                     val file = java.io.File(dir, "photo.jpg")
                     val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", file)
                     cameraUri = uri
+                    com.hakkiiler.voiceassistant.data.image.PickLog.header(context)
                     camera.launch(uri)
-                }.onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }
+                }.onFailure { draw.reportPickError("Камера не запустилась", it) }
             },
             clearSource = { draw.clearSource() },
             share = { r ->
@@ -257,6 +297,7 @@ fun DrawContent(
     source: Bitmap? = null,
     sourceInfo: com.hakkiiler.voiceassistant.data.image.SourceInfo? = null,
     sourceLoading: Boolean = false,
+    sourceError: String? = null,
     actions: DrawActions,
     modifier: Modifier = Modifier,
     plan: DrawPresets.Plan = DrawPresets.plan(
@@ -280,7 +321,7 @@ fun DrawContent(
 
         if (gallery.isNotEmpty()) GalleryStrip(gallery, state.result?.file, enabled = !state.running, actions)
 
-        SourceCard(form, source, sourceInfo, sourceLoading, enabled = !state.running, actions)
+        SourceCard(form, source, sourceInfo, sourceLoading, sourceError, enabled = !state.running, actions)
 
         PromptCard(form, state, installed, actions)
 
@@ -757,10 +798,11 @@ private fun AdvancedCard(form: DrawForm, enabled: Boolean, actions: DrawActions)
 
 // ---------------- img2img: исходное фото ----------------
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SourceCard(
     form: DrawForm, source: Bitmap?, info: com.hakkiiler.voiceassistant.data.image.SourceInfo?, loading: Boolean,
-    enabled: Boolean, actions: DrawActions,
+    error: String?, enabled: Boolean, actions: DrawActions,
 ) {
     SectionCard(
         title = stringResource(R.string.img2img_title),
@@ -819,9 +861,21 @@ private fun SourceCard(
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
+        if (error != null) {
+            Banner(
+                error, title = stringResource(R.string.img2img_error), tone = BannerTone.Error,
+                actions = {
+                    TextButton(onClick = actions.pickFile) { Text(stringResource(R.string.img2img_other_way)) }
+                    TextButton(onClick = actions.shareLog) { Text(stringResource(R.string.img2img_share_log)) }
+                    TextButton(onClick = actions.dismissSourceError) { Text("OK") }
+                },
+            )
+        }
+        // во время рисования менять фото нельзя; в остальное время кнопки активны всегда (модель для выбора не нужна)
+        androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
             FilledTonalButton(onClick = actions.pickPhoto, enabled = enabled && !loading) { Text(stringResource(R.string.img2img_gallery)) }
             FilledTonalButton(onClick = actions.takePhoto, enabled = enabled && !loading) { Text(stringResource(R.string.img2img_camera)) }
+            TextButton(onClick = actions.pickFile, enabled = enabled && !loading) { Text(stringResource(R.string.img2img_files)) }
         }
         if (source != null) {
             Text(stringResource(R.string.img2img_strength, (form.strength * 100).roundToInt()), style = MaterialTheme.typography.bodyLarge)
