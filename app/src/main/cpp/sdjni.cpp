@@ -215,8 +215,8 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeMergeLo
     std::string lora_path = to_string(env, jlora);
     std::string out = to_string(env, jout);
     sd_lora_t lora{false, multiplier, lora_path.c_str()};
-    return convert_with_components(model.c_str(), nullptr, nullptr, nullptr, nullptr, nullptr, out.c_str(),
-                                   SD_TYPE_Q8_0, nullptr, false, threads, &lora, 1);
+    return convert_with_components(model.c_str(), "", "", "", "", "", out.c_str(),
+                                   SD_TYPE_Q8_0, "", false, threads, &lora, 1);
 }
 
 // ---------------- ESRGAN-апскейлер ----------------
