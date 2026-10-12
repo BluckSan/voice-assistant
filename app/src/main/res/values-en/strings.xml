@@ -177,4 +177,8 @@
     <string name="img2img_camera">Camera</string>
     <string name="img2img_before">Before</string>
     <string name="img2img_after">After</string>
+    <string name="img2img_selected_short">Photo selected — describe the change</string>
+    <string name="img2img_pick">Tap to pick a photo</string>
+    <string name="img2img_loading">Processing the photo…</string>
+    <string name="img2img_replace">Replace</string>
 </resources>

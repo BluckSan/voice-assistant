@@ -177,4 +177,8 @@
     <string name="img2img_camera">Камера</string>
     <string name="img2img_before">До</string>
     <string name="img2img_after">После</string>
+    <string name="img2img_selected_short">Фото выбрано — опиши, что изменить</string>
+    <string name="img2img_pick">Нажми, чтобы выбрать фото</string>
+    <string name="img2img_loading">Обрабатываю фото…</string>
+    <string name="img2img_replace">Заменить</string>
 </resources>

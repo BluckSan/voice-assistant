@@ -76,6 +76,9 @@ data class DrawResult(
 )
 
 /** Картинка из истории (лента последних работ). */
+/** Выбранное для img2img фото: имя файла, исходный размер в пикселях и байтах. */
+data class SourceInfo(val name: String, val width: Int, val height: Int, val bytes: Long)
+
 data class GalleryItem(val file: File, val prompt: String)
 
 data class DrawState(
@@ -165,19 +168,70 @@ class DrawController(
     /** Фото для img2img, уже повёрнутое по EXIF и подогнанное под размер модели. null — обычное рисование. */
     private val _source = MutableStateFlow<Bitmap?>(null)
     val source: StateFlow<Bitmap?> = _source
+    /** Подпись к выбранному фото: имя файла и исходный размер. */
+    private val _sourceInfo = MutableStateFlow<SourceInfo?>(null)
+    val sourceInfo: StateFlow<SourceInfo?> = _sourceInfo
+    private val _sourceLoading = MutableStateFlow(false)
+    val sourceLoading: StateFlow<Boolean> = _sourceLoading
     private val _sourceError = MutableStateFlow<String?>(null)
     val sourceError: StateFlow<String?> = _sourceError
 
-    fun setSource(uri: android.net.Uri) {
-        if (_state.value.running) return
+    // выбранное фото храним в filesDir — переживает поворот экрана и убийство процесса
+    private val sourceDir = File(context.filesDir, "img2img")
+    private val sourceFile = File(sourceDir, "source.png")
+    private val sourceMeta = File(sourceDir, "source.txt")
+
+    init {
         scope.launch {
-            runCatching { InitImage.load(context, uri) }
-                .onSuccess { _source.value = it; _sourceError.value = null }
-                .onFailure { Log.w(TAG, "source", it); _sourceError.value = it.message ?: "Не удалось открыть фото" }
+            val restored = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!sourceFile.isFile) return@runCatching null
+                    val bmp = BitmapFactory.decodeFile(sourceFile.path) ?: return@runCatching null
+                    val meta = sourceMeta.takeIf { it.isFile }?.readLines().orEmpty()
+                    bmp to SourceInfo(meta.getOrNull(0) ?: "photo", meta.getOrNull(1)?.toIntOrNull() ?: bmp.width,
+                        meta.getOrNull(2)?.toIntOrNull() ?: bmp.height, meta.getOrNull(3)?.toLongOrNull() ?: 0L)
+                }.getOrNull()
+            }
+            if (restored != null && _source.value == null) { _source.value = restored.first; _sourceInfo.value = restored.second }
         }
     }
 
-    fun clearSource() { if (!_state.value.running) _source.value = null }
+    fun setSource(uri: android.net.Uri) {
+        if (_state.value.running) return
+        Log.i(TAG, "img2img source picked: $uri")
+        _sourceLoading.value = true
+        _sourceError.value = null
+        scope.launch {
+            try {
+                val loaded = InitImage.load(context, uri)
+                _source.value = loaded.bitmap
+                _sourceInfo.value = loaded.info
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        sourceDir.mkdirs()
+                        sourceFile.outputStream().use { loaded.bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                        sourceMeta.writeText(listOf(loaded.info.name, loaded.info.width, loaded.info.height, loaded.info.bytes).joinToString("\n"))
+                    }.onFailure { Log.w(TAG, "persist source", it) }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.w(TAG, "source", e)
+                _sourceError.value = "Не удалось открыть фото: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _sourceLoading.value = false
+            }
+        }
+    }
+
+    fun consumeSourceError() { _sourceError.value = null }
+
+    fun clearSource() {
+        if (_state.value.running) return
+        _source.value = null
+        _sourceInfo.value = null
+        scope.launch(Dispatchers.IO) { sourceFile.delete(); sourceMeta.delete() }
+    }
 
     // ---------------- загрузка модели ----------------
 

@@ -1,6 +1,8 @@
 package com.hakkiiler.voiceassistant.ui.screens
 
 import android.Manifest
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.shape.RoundedCornerShape
 import com.hakkiiler.voiceassistant.ui.components.StatusPill
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.draw.drawWithContent
@@ -157,15 +159,18 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
     val gallery by draw.gallery.collectAsStateWithLifecycle()
     val source by draw.source.collectAsStateWithLifecycle()
     val sourceError by draw.sourceError.collectAsStateWithLifecycle()
+    val sourceInfo by draw.sourceInfo.collectAsStateWithLifecycle()
+    val sourceLoading by draw.sourceLoading.collectAsStateWithLifecycle()
     val context = LocalContext.current
     // img2img: выбор фото (системный photo picker, разрешения не нужны) или снимок камерой во временный файл
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let { draw.setSource(it) } }
-    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // rememberSaveable: пока открыта камера, Android может пересоздать экран — адрес снимка не должен потеряться
+    var cameraUri by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<android.net.Uri?>(null) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         val u = cameraUri
         if (ok && u != null) draw.setSource(u)
     }
-    LaunchedEffect(sourceError) { sourceError?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() } }
+    LaunchedEffect(sourceError) { sourceError?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show(); draw.consumeSourceError() } }
     val scope = rememberCoroutineScope()
 
     // пока рисуем — экран не гаснет (генерация идёт на CPU несколько минут)
@@ -199,6 +204,8 @@ fun DrawScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
         upscaler = upscaler,
         gallery = gallery,
         source = source,
+        sourceInfo = sourceInfo,
+        sourceLoading = sourceLoading,
         unsupportedReason = draw.unsupportedReason,
         plan = remember(form, upscaler.installed, state.running) { draw.planFor(form) },
         actions = DrawActions(
@@ -248,6 +255,8 @@ fun DrawContent(
     gallery: List<GalleryItem>,
     unsupportedReason: String?,
     source: Bitmap? = null,
+    sourceInfo: com.hakkiiler.voiceassistant.data.image.SourceInfo? = null,
+    sourceLoading: Boolean = false,
     actions: DrawActions,
     modifier: Modifier = Modifier,
     plan: DrawPresets.Plan = DrawPresets.plan(
@@ -271,7 +280,7 @@ fun DrawContent(
 
         if (gallery.isNotEmpty()) GalleryStrip(gallery, state.result?.file, enabled = !state.running, actions)
 
-        SourceCard(form, source, enabled = !state.running, actions)
+        SourceCard(form, source, sourceInfo, sourceLoading, enabled = !state.running, actions)
 
         PromptCard(form, state, installed, actions)
 
@@ -749,38 +758,80 @@ private fun AdvancedCard(form: DrawForm, enabled: Boolean, actions: DrawActions)
 // ---------------- img2img: исходное фото ----------------
 
 @Composable
-private fun SourceCard(form: DrawForm, source: Bitmap?, enabled: Boolean, actions: DrawActions) {
+private fun SourceCard(
+    form: DrawForm, source: Bitmap?, info: com.hakkiiler.voiceassistant.data.image.SourceInfo?, loading: Boolean,
+    enabled: Boolean, actions: DrawActions,
+) {
     SectionCard(
         title = stringResource(R.string.img2img_title),
         icon = painterResource(R.drawable.ic_image),
-        subtitle = stringResource(if (source == null) R.string.img2img_hint else R.string.img2img_selected, source?.width ?: 0, source?.height ?: 0),
+        subtitle = stringResource(if (source == null) R.string.img2img_hint else R.string.img2img_selected_short),
     ) {
-        if (source != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(
-                    source.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop,
-                    modifier = Modifier.size(96.dp).clip(MaterialTheme.shapes.medium),
-                )
+        // поле выбора: миниатюра + имя/размер + «Заменить» + ✕
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+                .clickable(enabled = enabled && !loading, onClick = actions.pickPhoto),
+        ) {
+            Row(Modifier.padding(Spacing.s), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    when {
+                        loading -> CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+                        source != null -> Image(
+                            source.asImageBitmap(), contentDescription = info?.name,
+                            contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                        )
+                        else -> Icon(painterResource(R.drawable.ic_image), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 Spacer(Modifier.size(Spacing.m))
                 Column(Modifier.weight(1f)) {
-                    Text(stringResource(R.string.img2img_strength, (form.strength * 100).roundToInt()), style = MaterialTheme.typography.bodyLarge)
-                    Slider(
-                        value = form.strength,
-                        onValueChange = { v -> actions.update { it.copy(strength = (v * 20).roundToInt() / 20f) } },
-                        valueRange = 0.2f..0.9f,
-                        enabled = enabled,
-                    )
                     Text(
-                        stringResource(R.string.img2img_strength_hint),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        when {
+                            loading -> stringResource(R.string.img2img_loading)
+                            source != null -> info?.name ?: "photo"
+                            else -> stringResource(R.string.img2img_pick)
+                        },
+                        style = MaterialTheme.typography.bodyLarge, maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
+                    if (source != null && !loading) {
+                        val bytes = info?.bytes?.takeIf { it > 0 }?.let { " · " + String.format(Locale.US, "%.1f", it / 1_000_000.0) + " MB" }.orEmpty()
+                        val orig = info?.let { "${it.width}×${it.height}" } ?: ""
+                        Text(
+                            "$orig$bytes → ${source.width}×${source.height}",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(
+                            onClick = actions.pickPhoto, enabled = enabled,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                        ) { Text(stringResource(R.string.img2img_replace)) }
+                    }
+                }
+                if (source != null && !loading) {
+                    IconButton(onClick = actions.clearSource, enabled = enabled) {
+                        Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.action_delete))
+                    }
                 }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
-            FilledTonalButton(onClick = actions.pickPhoto, enabled = enabled) { Text(stringResource(R.string.img2img_gallery)) }
-            FilledTonalButton(onClick = actions.takePhoto, enabled = enabled) { Text(stringResource(R.string.img2img_camera)) }
-            if (source != null) TextButton(onClick = actions.clearSource, enabled = enabled) { Text(stringResource(R.string.action_delete)) }
+            FilledTonalButton(onClick = actions.pickPhoto, enabled = enabled && !loading) { Text(stringResource(R.string.img2img_gallery)) }
+            FilledTonalButton(onClick = actions.takePhoto, enabled = enabled && !loading) { Text(stringResource(R.string.img2img_camera)) }
+        }
+        if (source != null) {
+            Text(stringResource(R.string.img2img_strength, (form.strength * 100).roundToInt()), style = MaterialTheme.typography.bodyLarge)
+            Slider(
+                value = form.strength,
+                onValueChange = { v -> actions.update { it.copy(strength = (v * 20).roundToInt() / 20f) } },
+                valueRange = 0.2f..0.9f,
+                enabled = enabled,
+            )
+            Text(stringResource(R.string.img2img_strength_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

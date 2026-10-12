@@ -46,8 +46,20 @@ object InitImage {
         }
     }
 
-    suspend fun load(context: Context, uri: Uri): Bitmap = withContext(Dispatchers.IO) {
+    class Loaded(val bitmap: Bitmap, val info: SourceInfo)
+
+    suspend fun load(context: Context, uri: Uri): Loaded = withContext(Dispatchers.IO) {
         val cr = context.contentResolver
+        var name = uri.lastPathSegment ?: "photo"
+        var bytes = 0L
+        runCatching {
+            cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    c.getString(0)?.let { name = it }
+                    if (!c.isNull(1)) bytes = c.getLong(1)
+                }
+            }
+        }
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: error("Не удалось открыть фото")
         require(bounds.outWidth > 0) { "Это не картинка" }
@@ -60,7 +72,12 @@ object InitImage {
             cr.openInputStream(uri)?.use { ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) }
         }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
         val rotated = rotate(raw, orientation)
-        prepare(rotated)
+        // исходный размер с учётом поворота
+        val swap = orientation in setOf(ExifInterface.ORIENTATION_ROTATE_90, ExifInterface.ORIENTATION_ROTATE_270,
+            ExifInterface.ORIENTATION_TRANSPOSE, ExifInterface.ORIENTATION_TRANSVERSE)
+        val ow = if (swap) bounds.outHeight else bounds.outWidth
+        val oh = if (swap) bounds.outWidth else bounds.outHeight
+        Loaded(prepare(rotated), SourceInfo(name, ow, oh, bytes))
     }
 
     private fun rotate(b: Bitmap, orientation: Int): Bitmap {
