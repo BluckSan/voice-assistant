@@ -478,6 +478,10 @@ private fun RunningPreview(state: DrawState) {
                 }
             }
             Text(label, style = MaterialTheme.typography.titleSmall)
+            val backend by com.hakkiiler.voiceassistant.data.accel.Accel.drawBackend.collectAsStateWithLifecycle()
+            if (backend != null) {
+                Text(com.hakkiiler.voiceassistant.data.accel.Accel.label(backend), style = MaterialTheme.typography.labelMedium, color = c.primary)
+            }
             Text(stringResource(R.string.draw_elapsed, formatClock(seconds)), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
         }
     }
@@ -495,6 +499,7 @@ private fun ResultActions(r: DrawResult, actions: DrawActions) {
             if (r.steps > 0) MetaChip(stringResource(R.string.draw_meta_steps, r.steps))
             if (r.seed >= 0) MetaChip("seed ${r.seed}")
             if (r.millis > 0) MetaChip(formatClock(r.millis / 1000))
+            r.backend?.let { MetaChip(if (it == com.hakkiiler.voiceassistant.data.accel.Backend.VULKAN) "⚡ Vulkan" else "CPU") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.s)) {
             Button(onClick = { actions.save(r) }, modifier = Modifier.weight(1f)) {

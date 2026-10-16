@@ -19,7 +19,8 @@ object LlamaNative {
         }
     }
 
-    external fun nativeOpen(path: String, nCtx: Int, threads: Int): Long
+    external fun nativeOpen(path: String, nCtx: Int, threads: Int, gpu: Boolean): Long
+    external fun nativeVulkanProbe(): String
     external fun nativeClose(handle: Long)
     external fun nativeCancel(handle: Long)
     external fun nativeLastError(handle: Long): String

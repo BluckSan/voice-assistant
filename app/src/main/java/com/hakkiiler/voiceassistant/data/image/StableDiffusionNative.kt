@@ -46,7 +46,12 @@ object StableDiffusionNative {
 
     external fun nativeSystemInfo(): String
     external fun nativeLastError(): String
-    external fun nativeCreate(modelPath: String, taesdPath: String?, threads: Int, mmap: Boolean, flashAttn: Boolean): Long
+    external fun nativeCreate(modelPath: String, taesdPath: String?, threads: Int, mmap: Boolean, flashAttn: Boolean, gpu: Boolean): Long
+    /** «ok <погрешность> <видеочип>» или «fail <причина>»; вызывать только в процессе :gpuprobe. */
+    external fun nativeVulkanProbe(): String
+    external fun nativeGpuName(): String
+    external fun nativeSetAffinity(mask: Long): Boolean
+    external fun nativeSetEnv(key: String, value: String)
     external fun nativeFree(ctx: Long)
     /** Отмена в любой момент (флаг проверяется на каждом шаге и перед стартом). */
     external fun nativeCancel(ctx: Long)

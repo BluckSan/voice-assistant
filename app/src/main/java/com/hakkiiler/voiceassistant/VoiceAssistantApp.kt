@@ -9,6 +9,10 @@ class VoiceAssistantApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // процесс самопроверки видеочипа (:gpuprobe) — без остального приложения
+        val proc = runCatching { java.io.File("/proc/self/cmdline").readText().trimEnd('\u0000') }.getOrDefault("")
+        if (proc.endsWith(":gpuprobe")) return
+        com.hakkiiler.voiceassistant.data.accel.Accel.init(this)
         container = AppContainer(this)
     }
 

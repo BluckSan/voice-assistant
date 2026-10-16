@@ -1,5 +1,7 @@
 package com.hakkiiler.voiceassistant.ui.screens
 
+import androidx.compose.material.icons.filled.Settings
+import kotlinx.coroutines.launch
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -233,6 +235,8 @@ fun SettingsScreen(vm: AssistantViewModel, modifier: Modifier = Modifier) {
             }
         }
 
+        AccelSection()
+
         // ---- о приложении ----
         SectionCard(title = stringResource(R.string.settings_about), icon = rememberVectorPainter(Icons.Filled.Info)) {
             Text(stringResource(R.string.app_name) + " " + BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodyLarge)
@@ -289,5 +293,48 @@ internal fun SwitchRow(title: String, text: String?, checked: Boolean, onChange:
             if (text != null) Hint(text)
         }
         Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
+    }
+}
+
+/** «Ускорение: Авто / Видеочип (Vulkan) / Процессор» + результат самопроверки. */
+@Composable
+private fun AccelSection() {
+    val A = com.hakkiiler.voiceassistant.data.accel.Accel
+    val mode by A.mode.collectAsStateWithLifecycle()
+    val probe by A.probe.collectAsStateWithLifecycle()
+    val probing by A.probing.collectAsStateWithLifecycle()
+    val drawB by A.drawBackend.collectAsStateWithLifecycle()
+    val llmB by A.llmBackend.collectAsStateWithLifecycle()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    SectionCard(title = stringResource(R.string.accel_title), icon = rememberVectorPainter(Icons.Filled.Settings)) {
+        val modes = com.hakkiiler.voiceassistant.data.accel.AccelMode.entries
+        val labels = listOf(R.string.accel_auto, R.string.accel_vulkan, R.string.accel_cpu)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            modes.forEachIndexed { i, m ->
+                SegmentedButton(
+                    selected = mode == m,
+                    onClick = { A.setMode(m) },
+                    shape = SegmentedButtonDefaults.itemShape(i, modes.size),
+                ) { Text(stringResource(labels[i]), maxLines = 1) }
+            }
+        }
+        Hint(stringResource(R.string.accel_hint, A.cpuThreads()))
+        val status = when {
+            probing -> stringResource(R.string.accel_probing)
+            probe == null -> stringResource(R.string.accel_not_checked)
+            else -> {
+                val p = probe!!
+                val gpu = p.gpu.ifBlank { "GPU" }
+                stringResource(
+                    R.string.accel_probe_result, gpu,
+                    stringResource(if (p.sdOk) R.string.accel_ok else R.string.accel_bad),
+                    stringResource(if (p.llmOk) R.string.accel_ok else R.string.accel_bad),
+                ) + (if (p.noF16) " (без fp16)" else "")
+            }
+        }
+        Text(status, style = MaterialTheme.typography.bodyMedium)
+        probe?.detail?.takeIf { it.isNotBlank() && (!probe!!.sdOk || !probe!!.llmOk) }?.let { Hint(it) }
+        Hint(stringResource(R.string.accel_active, A.label(drawB), A.label(llmB)))
+        TextButton(enabled = !probing, onClick = { scope.launch { A.reprobe() } }) { Text(stringResource(R.string.accel_reprobe)) }
     }
 }

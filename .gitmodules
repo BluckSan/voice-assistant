@@ -7,3 +7,9 @@
 [submodule "app/src/main/cpp/whisper.cpp"]
 	path = app/src/main/cpp/whisper.cpp
 	url = https://github.com/ggml-org/whisper.cpp
+[submodule "app/src/main/cpp/Vulkan-Headers"]
+	path = app/src/main/cpp/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "app/src/main/cpp/SPIRV-Headers"]
+	path = app/src/main/cpp/SPIRV-Headers
+	url = https://github.com/KhronosGroup/SPIRV-Headers.git

@@ -1,4 +1,7 @@
 // JNI-обёртка над stable-diffusion.cpp для com.hakkiiler.voiceassistant.data.image.StableDiffusionNative
+#include "vkprobe.h"
+#include <sched.h>
+#include <cstdlib>
 #include <jni.h>
 #include <android/log.h>
 
@@ -102,7 +105,7 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeLastErr
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeCreate(
-        JNIEnv* env, jobject, jstring model_path, jstring taesd_path, jint threads, jboolean mmap, jboolean flash_attn) {
+        JNIEnv* env, jobject, jstring model_path, jstring taesd_path, jint threads, jboolean mmap, jboolean flash_attn, jboolean gpu) {
     clear_error();
     std::string model = to_string(env, model_path);
     std::string taesd = to_string(env, taesd_path);
@@ -113,7 +116,9 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeCreate(
     p.taesd_path = taesd.empty() ? nullptr : taesd.c_str();
     p.n_threads = threads;
     p.enable_mmap = mmap;
-    p.backend = "cpu";
+    std::string gpu_dev = gpu ? vkprobe::gpu_name() : "";
+    p.backend = gpu_dev.empty() ? "cpu" : gpu_dev.c_str();
+    __android_log_print(ANDROID_LOG_INFO, "sdjni", "backend=%s threads=%d", p.backend, threads);
     p.vae_conv_direct = false;
     p.eager_load = true;
     // flash attention в UNet: без неё матрица внимания на 768×1152 занимает гигабайты
@@ -291,4 +296,34 @@ Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeUpscale
     }
     if (outs) free_sd_images(outs, count);
     return result;
+}
+
+// ---- ускорение: Vulkan-самопроверка, привязка к большим ядрам, переменные окружения ggml ----
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeVulkanProbe(JNIEnv* env, jobject) {
+    std::string r;
+    try { r = vkprobe::self_test(); } catch (const std::exception& e) { r = std::string("fail exception ") + e.what(); }
+    return env->NewStringUTF(r.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeGpuName(JNIEnv* env, jobject) {
+    std::string r;
+    try { ggml_backend_dev_t d = vkprobe::find_gpu(); if (d) r = ggml_backend_dev_description(d); } catch (...) {}
+    return env->NewStringUTF(r.c_str());
+}
+
+// Привязать текущий поток (и потоки ggml, которые он создаст) к ядрам из маски.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeSetAffinity(JNIEnv*, jobject, jlong mask) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int i = 0; i < 64; ++i) if (mask & (1LL << i)) CPU_SET(i, &set);
+    return sched_setaffinity(0, sizeof(set), &set) == 0;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_hakkiiler_voiceassistant_data_image_StableDiffusionNative_nativeSetEnv(JNIEnv* env, jobject, jstring k, jstring v) {
+    std::string key = to_string(env, k), val = to_string(env, v);
+    setenv(key.c_str(), val.c_str(), 1);
 }

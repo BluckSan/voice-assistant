@@ -29,9 +29,36 @@ set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 # На процессорах без i8mm библиотеку не загружаем (проверка в StableDiffusionNative.kt).
 set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+i8mm+fp16" CACHE STRING "" FORCE)
 
+# --- Vulkan (видеочип). Заголовки Vulkan-Hpp и SPIRV — сабмодули (в NDK их нет / они старые),
+# libvulkan.so — из NDK, glslc — из NDK/shader-tools. Выбор CPU/Vulkan — во время работы.
+option(VA_VULKAN "ggml Vulkan backend" ON)
+set(VK_HEADERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Vulkan-Headers/include)
+set(SPIRV_HEADERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/SPIRV-Headers/include)
+# glslc из NDK r27 (shaderc 2022.3) слишком старый для шейдеров ggml (coopmat) — нужен shaderc ≥ 2024 (apt install glslc / Vulkan SDK)
+find_program(VA_GLSLC glslc PATHS $ENV{VULKAN_SDK}/bin NO_CMAKE_FIND_ROOT_PATH)
+if(NOT VA_GLSLC)
+    set(VA_GLSLC ${ANDROID_NDK}/shader-tools/linux-x86_64/glslc)
+endif()
+message(STATUS "glslc: ${VA_GLSLC}")
+# заглушка libvulkan из API 29: в ней есть функции Vulkan 1.1 (vkGetPhysicalDeviceFeatures2 и др.), в API 24 — нет.
+# Сама библиотека — системная; рисование всё равно требует ARMv8.6 (телефоны с Android 12+).
+set(VA_VULKAN_LIB ${CMAKE_SYSROOT}/usr/lib/aarch64-linux-android/29/libvulkan.so)
+set(VK_FLAGS "")
+set(VK_ARGS "")
+if(VA_VULKAN)
+    set(VK_FLAGS "-isystem ${VK_HEADERS_DIR} -isystem ${SPIRV_HEADERS_DIR}")
+    set(VK_ARGS -DGGML_VULKAN=ON -DVulkan_INCLUDE_DIR=${VK_HEADERS_DIR} -DVulkan_LIBRARY=${VA_VULKAN_LIB}
+        -DVulkan_GLSLC_EXECUTABLE=${VA_GLSLC} -DSPIRV-Headers_DIR=${CMAKE_CURRENT_SOURCE_DIR}/cmake-stubs)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+    set(Vulkan_INCLUDE_DIR ${VK_HEADERS_DIR} CACHE PATH "" FORCE)
+    set(Vulkan_LIBRARY ${VA_VULKAN_LIB} CACHE FILEPATH "" FORCE)
+    set(Vulkan_GLSLC_EXECUTABLE ${VA_GLSLC} CACHE FILEPATH "" FORCE)
+    set(SPIRV-Headers_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cmake-stubs CACHE PATH "" FORCE)
+endif()
+
 # убираем неиспользуемый код и данные
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections ${VK_FLAGS}")
 
 add_subdirectory(${SDCPP_DIR} sdcpp EXCLUDE_FROM_ALL)
 
@@ -43,7 +70,7 @@ set_property(TARGET stable-diffusion PROPERTY SOURCES ${SD_SOURCES} ${CMAKE_CURR
 target_include_directories(stable-diffusion PRIVATE ${SDCPP_DIR}/src/tokenizers/vocab)
 
 add_library(sdjni SHARED sdjni.cpp)
-target_include_directories(sdjni PRIVATE ${SDCPP_DIR}/include)
+target_include_directories(sdjni PRIVATE ${SDCPP_DIR}/include ${SDCPP_DIR}/ggml/include)
 target_link_libraries(sdjni PRIVATE stable-diffusion log android)
 target_link_options(sdjni PRIVATE
     -Wl,--gc-sections
@@ -65,7 +92,7 @@ set(EXT_COMMON_ARGS
     -DBUILD_SHARED_LIBS=OFF
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
     "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections"
-    "-DCMAKE_CXX_FLAGS=-ffunction-sections -fdata-sections"
+    "-DCMAKE_CXX_FLAGS=-ffunction-sections -fdata-sections ${VK_FLAGS}"
     -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_LLAMAFILE=ON
     -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF
     -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm+fp16)
@@ -87,9 +114,9 @@ ExternalProject_Add(llama_ext
     INSTALL_DIR ${LLAMA_PREFIX}
     CMAKE_ARGS ${EXT_COMMON_ARGS} -DCMAKE_INSTALL_PREFIX=${LLAMA_PREFIX} -DCMAKE_INSTALL_LIBDIR=lib
         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF
-        -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_HTML=OFF -DLLAMA_BUILD_IS_DEV=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF
+        ${VK_ARGS} -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_HTML=OFF -DLLAMA_BUILD_IS_DEV=OFF -DLLAMA_CURL=OFF -DLLAMA_OPENSSL=OFF
     BUILD_BYPRODUCTS ${LLAMA_PREFIX}/lib/libllama.a ${LLAMA_PREFIX}/lib/libggml.a
-        ${LLAMA_PREFIX}/lib/libggml-cpu.a ${LLAMA_PREFIX}/lib/libggml-base.a)
+        ${LLAMA_PREFIX}/lib/libggml-cpu.a ${LLAMA_PREFIX}/lib/libggml-base.a ${LLAMA_PREFIX}/lib/libggml-vulkan.a)
 
 add_library(whisperjni SHARED whisperjni.cpp)
 add_dependencies(whisperjni whisper_ext)
@@ -104,5 +131,6 @@ add_dependencies(llamajni llama_ext)
 target_include_directories(llamajni PRIVATE ${LLAMA_PREFIX}/include)
 target_link_libraries(llamajni PRIVATE
     ${LLAMA_PREFIX}/lib/libllama.a ${LLAMA_PREFIX}/lib/libggml.a
-    ${LLAMA_PREFIX}/lib/libggml-cpu.a ${LLAMA_PREFIX}/lib/libggml-base.a log android m)
+    ${LLAMA_PREFIX}/lib/libggml-cpu.a $<$<BOOL:${VA_VULKAN}>:${LLAMA_PREFIX}/lib/libggml-vulkan.a>
+    ${LLAMA_PREFIX}/lib/libggml-base.a $<$<BOOL:${VA_VULKAN}>:${VA_VULKAN_LIB}> log android m)
 target_link_options(llamajni PRIVATE -Wl,--gc-sections -Wl,--exclude-libs,ALL -Wl,-z,max-page-size=16384)

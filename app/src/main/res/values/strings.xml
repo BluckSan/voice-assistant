@@ -187,4 +187,16 @@
     <string name="img2img_files">Из файлов</string>
     <string name="img2img_fast">Быстрое проявление (TAESD)</string>
     <string name="img2img_fast_hint">Секунды вместо минут и мало памяти; детали чуть мягче. Выключи для максимального качества.</string>
+    <string name="accel_title">Ускорение</string>
+    <string name="accel_auto">Авто</string>
+    <string name="accel_vulkan">Видеочип (Vulkan)</string>
+    <string name="accel_cpu">Процессор</string>
+    <string name="accel_hint">Авто — сначала проверяет видеочип маленьким тестом (в отдельном процессе) и при сбое, NaN или чёрной картинке запоминает и переходит на процессор. Процессор — %1$d потока на больших ядрах.</string>
+    <string name="accel_probing">Проверяю видеочип…</string>
+    <string name="accel_not_checked">Видеочип ещё не проверялся (проверка — при первом запуске нейросети)</string>
+    <string name="accel_probe_result">%1$s: рисование — %2$s, чат — %3$s</string>
+    <string name="accel_ok">работает</string>
+    <string name="accel_bad">не прошёл проверку</string>
+    <string name="accel_active">Сейчас: рисование — %1$s; чат — %2$s</string>
+    <string name="accel_reprobe">Проверить заново</string>
 </resources>

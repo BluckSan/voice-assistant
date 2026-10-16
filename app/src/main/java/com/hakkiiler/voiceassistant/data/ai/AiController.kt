@@ -1,5 +1,8 @@
 package com.hakkiiler.voiceassistant.data.ai
 
+import com.hakkiiler.voiceassistant.data.accel.Accel
+import com.hakkiiler.voiceassistant.data.accel.AccelMode
+import com.hakkiiler.voiceassistant.data.accel.Backend
 import android.app.ActivityManager
 import android.content.Context
 import android.util.Log
@@ -152,6 +155,33 @@ class AiController(private val context: Context, private val scope: CoroutineSco
      * Ответ на последнее сообщение пользователя с учётом истории. Текст печатается в [llm].streaming.
      * @throws IllegalStateException при нехватке памяти / занятом рисовании / ошибке модели
      */
+    /** Бэкенд открытой сейчас модели. */
+    private var llmGpu = false
+
+    /** Открыть LLM на видеочипе (если выбран/прошёл самопроверку) или на больших ядрах CPU. */
+    private suspend fun openLlm(): Long {
+        Accel.pinToBigCores()
+        val path = downloader.file(AiModelSource.LLM).absolutePath
+        var backend = Accel.resolve(llm = true)
+        if (backend == Backend.VULKAN) {
+            Accel.beginGpuRun("llm-load")
+            val h = try { LlamaNative.nativeOpen(path, N_CTX, Accel.cpuThreads(), true) } finally { Accel.endGpuRun() }
+            if (h != 0L) { llmGpu = true; Log.i(TAG, "LLM on Vulkan"); return h }
+            if (Accel.mode.value != AccelMode.AUTO) return 0L
+            Accel.markBad(llm = true, reason = "load failed")
+            backend = Backend.CPU
+        }
+        llmGpu = false
+        Log.i(TAG, "LLM on CPU, threads=${Accel.cpuThreads()} ($backend)")
+        return LlamaNative.nativeOpen(path, N_CTX, Accel.cpuThreads(), false)
+    }
+
+    private inline fun <T> gpuGuard(block: () -> T): T {
+        if (!llmGpu) return block()
+        Accel.beginGpuRun("llm")
+        try { return block() } finally { Accel.endGpuRun() }
+    }
+
     suspend fun chat(history: List<ChatMessage>, now: LocalDateTime = LocalDateTime.now()): String {
         check(llmReady) { "Нейросеть не скачана / Model not installed" }
         if (!HeavyModelGuard.beforeChat()) error("Сейчас идёт рисование — подожди, пока закончится. / Drawing in progress.")
@@ -161,7 +191,7 @@ class AiController(private val context: Context, private val scope: CoroutineSco
                 if (llmCtx == 0L) {
                     _llm.value = LlmState(loading = true)
                     ensureMemory()
-                    llmCtx = LlamaNative.nativeOpen(downloader.file(AiModelSource.LLM).absolutePath, N_CTX, threads())
+                    llmCtx = openLlm()
                     if (llmCtx == 0L) error("Не удалось загрузить нейросеть / Failed to load the model")
                 }
                 _llm.value = LlmState(streaming = "")
@@ -169,7 +199,7 @@ class AiController(private val context: Context, private val scope: CoroutineSco
                 var msgs = trimHistory(history, MAX_HISTORY_CHARS)
                 var result: String? = null
                 for (attempt in 0..2) {
-                    result = run(system, msgs)
+                    result = gpuGuard { run(system, msgs) }
                     if (result != null) break
                     val err = LlamaNative.nativeLastError(llmCtx)
                     if (err != "context overflow") error("Ошибка нейросети: $err")
@@ -193,7 +223,7 @@ class AiController(private val context: Context, private val scope: CoroutineSco
         return withContext(llmThread) {
             if (llmCtx == 0L) {
                 ensureMemory()
-                llmCtx = LlamaNative.nativeOpen(downloader.file(AiModelSource.LLM).absolutePath, N_CTX, threads())
+                llmCtx = openLlm()
                 if (llmCtx == 0L) return@withContext null
             }
             activeLlm = llmCtx
@@ -201,7 +231,7 @@ class AiController(private val context: Context, private val scope: CoroutineSco
                 val w = com.hakkiiler.voiceassistant.domain.image.DrawPromptWriter
                 val roles = arrayOf("system") + w.EXAMPLES.flatMap { listOf("user", "assistant") } + "user"
                 val contents = arrayOf(w.SYSTEM) + w.EXAMPLES.flatMap { listOf(it.first, it.second) } + request
-                LlamaNative.nativeChat(llmCtx, roles, contents, 96, 0f, null)?.toString(Charsets.UTF_8)
+                gpuGuard { LlamaNative.nativeChat(llmCtx, roles, contents, 96, 0f, null)?.toString(Charsets.UTF_8) }
             } finally {
                 activeLlm = 0
             }

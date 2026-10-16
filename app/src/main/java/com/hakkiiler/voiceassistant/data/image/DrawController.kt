@@ -1,5 +1,8 @@
 package com.hakkiiler.voiceassistant.data.image
 
+import com.hakkiiler.voiceassistant.data.accel.Accel
+import com.hakkiiler.voiceassistant.data.accel.AccelMode
+import com.hakkiiler.voiceassistant.data.accel.Backend
 import android.app.ActivityManager
 import android.content.ComponentCallbacks2
 import android.content.Context
@@ -80,6 +83,8 @@ data class DrawResult(
     val file: File? = null,
     /** Исходное фото (img2img) — для сравнения «до / после». */
     val source: Bitmap? = null,
+    /** Чем считали: Vulkan (видеочип) или CPU. */
+    val backend: Backend? = null,
 )
 
 /** Картинка из истории (лента последних работ). */
@@ -92,6 +97,8 @@ data class DrawState(
     val phase: DrawPhase = DrawPhase.Idle,
     val result: DrawResult? = null,
     val startedAt: Long = 0,
+    /** Бэкенд текущей/последней генерации. */
+    val backend: Backend? = null,
 ) {
     val running get() = phase is DrawPhase.LoadingModel || phase is DrawPhase.Translating || phase is DrawPhase.Cancelling || phase is DrawPhase.Sampling ||
         phase is DrawPhase.Decoding || phase is DrawPhase.DecodingTiles || phase is DrawPhase.Upscaling
@@ -163,6 +170,7 @@ class DrawController(
     private var ctx = 0L
     private var ctxFastDecoder: Boolean? = null
     private var ctxFlash: Boolean? = null
+    private var ctxGpu: Boolean? = null
     @Volatile private var activeCtx = 0L
 
     private var downloadJob: Job? = null
@@ -378,35 +386,67 @@ class DrawController(
                 // нейросеть-собеседник и Whisper выгружаем: вместе с SD они не влезут в память
                 com.hakkiiler.voiceassistant.data.ai.HeavyModelGuard.beforeDraw()
                 val result = withContext(nativeDispatcher) {
+                    // потоки ggml наследуют привязку: только большие ядра (на Dimensity 8400 — 4–7)
+                    Accel.pinToBigCores()
+                    var backend = Accel.resolve(llm = false)
                     val plan = planFor(f.copy(fastDecoder = fastDecoder), size, steps)
                     ensureMemory(plan)
-                    Log.i(TAG, "plan: ${size.width}x${size.height} steps=$steps img2img=${src != null} taesd=$fastDecoder tiling=${plan.vaeTiling} flash=${plan.flashAttn} threads=${threadCount()}")
-                    val handle = ensureContext(fastDecoder, plan.flashAttn)
-                    if (cancelRequested) throw CancellationException("cancelled")
-                    activeCtx = handle
-                    _state.update { it.copy(phase = DrawPhase.Sampling(0, steps)) }
-                    val started = System.currentTimeMillis()
-                    val rgb = try {
-                        StableDiffusionNative.nativeGenerate(
-                            handle, prompt, f.negativePrompt.trim(), size.width, size.height, steps, f.cfg, seed,
-                            ImageModelSource.SAMPLER, plan.vaeTiling, initRgb, strength,
-                        ) { step, total, _ ->
-                            // плитки VAE тоже шлют прогресс: после сэмплинга это «проявление»
-                            val ph = _state.value.phase
-                            if ((ph is DrawPhase.Decoding || ph is DrawPhase.DecodingTiles) && !cancelRequested) {
-                                _state.update { it.copy(phase = DrawPhase.DecodingTiles(step, total)) }
-                                return@nativeGenerate
-                            }
-                            // при img2img шагов выполняется меньше (≈ steps × strength)
-                            val sampling = if (initRgb == null) total == steps else total in 1..steps && ph is DrawPhase.Sampling
-                            if (sampling && !cancelRequested) {
-                                _state.update { s ->
-                                    s.copy(phase = if (step >= total) DrawPhase.Decoding else DrawPhase.Sampling(step, total))
+                    var rgb: ByteArray?
+                    var started: Long
+                    while (true) {
+                        val gpu = backend == Backend.VULKAN
+                        Log.i(TAG, "plan: ${size.width}x${size.height} steps=$steps img2img=${src != null} taesd=$fastDecoder tiling=${plan.vaeTiling} flash=${plan.flashAttn} backend=$backend threads=${threadCount()}")
+                        _state.update { it.copy(backend = backend) }
+                        if (gpu) Accel.beginGpuRun("sd")
+                        var failure: Exception? = null
+                        started = System.currentTimeMillis()
+                        rgb = try {
+                            val handle = ensureContext(fastDecoder, plan.flashAttn, gpu)
+                            if (cancelRequested) throw CancellationException("cancelled")
+                            activeCtx = handle
+                            _state.update { it.copy(phase = DrawPhase.Sampling(0, steps)) }
+                            started = System.currentTimeMillis()
+                            StableDiffusionNative.nativeGenerate(
+                                handle, prompt, f.negativePrompt.trim(), size.width, size.height, steps, f.cfg, seed,
+                                ImageModelSource.SAMPLER, plan.vaeTiling, initRgb, strength,
+                            ) { step, total, _ ->
+                                // плитки VAE тоже шлют прогресс: после сэмплинга это «проявление»
+                                val ph = _state.value.phase
+                                if ((ph is DrawPhase.Decoding || ph is DrawPhase.DecodingTiles) && !cancelRequested) {
+                                    _state.update { it.copy(phase = DrawPhase.DecodingTiles(step, total)) }
+                                    return@nativeGenerate
+                                }
+                                // при img2img шагов выполняется меньше (≈ steps × strength)
+                                val sampling = if (initRgb == null) total == steps else total in 1..steps && ph is DrawPhase.Sampling
+                                if (sampling && !cancelRequested) {
+                                    _state.update { s ->
+                                        s.copy(phase = if (step >= total) DrawPhase.Decoding else DrawPhase.Sampling(step, total))
+                                    }
                                 }
                             }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            if (!gpu) throw e
+                            failure = e
+                            null
+                        } finally {
+                            activeCtx = 0
+                            if (gpu) Accel.endGpuRun()
                         }
-                    } finally {
-                        activeCtx = 0
+                        if (cancelRequested) throw CancellationException("cancelled")
+                        // «Авто»: видеочип не справился (ошибка, NaN, чёрная/однотонная картинка) — запоминаем и пересчитываем на CPU
+                        val bad = gpu && (rgb == null || ImageCheck.looksBroken(rgb))
+                        if (bad && Accel.mode.value == AccelMode.AUTO) {
+                            val why = failure?.message ?: if (rgb == null) nativeError("null") else "broken image"
+                            Log.w(TAG, "Vulkan result rejected ($why), retry on CPU")
+                            Accel.markBad(llm = false, reason = why)
+                            freeContext()
+                            backend = Backend.CPU
+                            continue
+                        }
+                        if (failure != null) throw failure
+                        break
                     }
                     if (cancelRequested) throw CancellationException("cancelled")
                     rgb ?: throw IllegalStateException(nativeError("Генерация не удалась / Generation failed"))
@@ -417,7 +457,7 @@ class DrawController(
                     }
                     if (cancelRequested) throw CancellationException("cancelled")
                     val file = runCatching { saveToHistory(bitmap, prompt) }.onFailure { Log.w(TAG, "history", it) }.getOrNull()
-                    DrawResult(bitmap, prompt, seed, bitmap.width, bitmap.height, steps, System.currentTimeMillis() - started, file, source = src)
+                    DrawResult(bitmap, prompt, seed, bitmap.width, bitmap.height, steps, System.currentTimeMillis() - started, file, source = src, backend = backend)
                 }
                 _state.value = DrawState(phase = DrawPhase.Idle, result = result)
             } catch (e: CancellationException) {
@@ -565,17 +605,18 @@ class DrawController(
         }
     }
 
-    private fun ensureContext(fastDecoder: Boolean, flashAttn: Boolean): Long {
-        if (ctx != 0L && ctxFastDecoder == fastDecoder && ctxFlash == flashAttn) return ctx
+    private fun ensureContext(fastDecoder: Boolean, flashAttn: Boolean, gpu: Boolean): Long {
+        if (ctx != 0L && ctxFastDecoder == fastDecoder && ctxFlash == flashAttn && ctxGpu == gpu) return ctx
         freeContext()
         _state.update { it.copy(phase = DrawPhase.LoadingModel) }
         val model = downloader.mergedFile.absolutePath
         val taesd = if (fastDecoder) downloader.file(ImageModelSource.TAESD).absolutePath else null
-        val handle = StableDiffusionNative.nativeCreate(model, taesd, threadCount(), true, flashAttn)
+        val handle = StableDiffusionNative.nativeCreate(model, taesd, threadCount(), true, flashAttn, gpu)
         if (handle == 0L) throw IllegalStateException(nativeError("Не удалось загрузить модель / Failed to load the model"))
         ctx = handle
         ctxFastDecoder = fastDecoder
         ctxFlash = flashAttn
+        ctxGpu = gpu
         return handle
     }
 
@@ -585,6 +626,7 @@ class DrawController(
             ctx = 0
             ctxFastDecoder = null
             ctxFlash = null
+            ctxGpu = null
         }
     }
 
@@ -657,22 +699,7 @@ class DrawController(
          * Dimensity 8400 — все 8 ядер Cortex-A725 (3.25/3.0/2.1 ГГц), раньше брали лишь 4 — шаг шёл ~1.6× медленнее.
          * Одно ядро оставляем системе и интерфейсу.
          */
-        fun threadCount(): Int = cachedThreads
-
-        private val cachedThreads: Int by lazy {
-            val cores = Runtime.getRuntime().availableProcessors()
-            val freqs = (0 until cores).mapNotNull { i ->
-                runCatching { File("/sys/devices/system/cpu/cpu$i/cpufreq/cpuinfo_max_freq").readText().trim().toLong() }.getOrNull()
-            }
-            val fast = if (freqs.size == cores && freqs.isNotEmpty()) {
-                val max = freqs.max()
-                freqs.count { it >= max * 0.6 }
-            } else cores / 2
-            when {
-                fast >= 8 -> 7
-                fast >= 6 -> fast
-                else -> fast.coerceAtLeast(4).coerceAtMost(cores)
-            }.also { Log.i(TAG, "threads=$it (cores=$cores, freqs=$freqs)") }
-        }
+        /** Только большие ядра (см. [Accel.cpuThreads]): на Dimensity 8400 это 4, а не 7. */
+        fun threadCount(): Int = Accel.cpuThreads()
     }
 }

@@ -1,5 +1,6 @@
 // JNI-обёртка над llama.cpp для com.hakkiiler.voiceassistant.data.llm.LlamaNative.
 // Ядро (LlmSession) без JNI, чтобы его можно было проверить на хосте (scripts/host_llm_test.cpp).
+#include "vkprobe.h"
 #include <atomic>
 #include <cstring>
 #include <functional>
@@ -25,7 +26,7 @@ struct LlmSession {
     std::atomic<bool> cancel{false};
     std::string error;
 
-    static LlmSession* open(const std::string& path, int n_ctx, int threads) {
+    static LlmSession* open(const std::string& path, int n_ctx, int threads, bool gpu) {
         static bool inited = false;
         if (!inited) {
             llama_log_set([](ggml_log_level lvl, const char* t, void*) {
@@ -35,6 +36,7 @@ struct LlmSession {
             inited = true;
         }
         auto mp = llama_model_default_params();
+        mp.n_gpu_layers = gpu ? 999 : 0;
         llama_model* model = llama_model_load_from_file(path.c_str(), mp);
         if (!model) return nullptr;
         auto cp = llama_context_default_params();
@@ -43,6 +45,7 @@ struct LlmSession {
         cp.n_ubatch = 512;
         cp.n_threads = threads;
         cp.n_threads_batch = threads;
+        if (!gpu) { cp.offload_kqv = false; cp.op_offload = false; }
         llama_context* ctx = llama_init_from_model(model, cp);
         if (!ctx) { llama_model_free(model); return nullptr; }
         auto* s = new LlmSession();
@@ -181,8 +184,8 @@ std::string g_error;
 
 #define FN(name) Java_com_hakkiiler_voiceassistant_data_llm_LlamaNative_##name
 
-extern "C" JNIEXPORT jlong JNICALL FN(nativeOpen)(JNIEnv* env, jobject, jstring path, jint n_ctx, jint threads) {
-    auto* s = LlmSession::open(jstr(env, path), n_ctx, threads);
+extern "C" JNIEXPORT jlong JNICALL FN(nativeOpen)(JNIEnv* env, jobject, jstring path, jint n_ctx, jint threads, jboolean gpu) {
+    auto* s = LlmSession::open(jstr(env, path), n_ctx, threads, gpu);
     if (!s) g_error = "Не удалось загрузить модель / model load failed";
     return reinterpret_cast<jlong>(s);
 }
@@ -235,3 +238,9 @@ extern "C" JNIEXPORT jbyteArray JNICALL FN(nativeChat)(JNIEnv* env, jobject, jlo
     return bytes(env, out);
 }
 #endif
+
+extern "C" JNIEXPORT jstring JNICALL FN(nativeVulkanProbe)(JNIEnv* env, jobject) {
+    std::string r;
+    try { r = vkprobe::self_test(); } catch (const std::exception& e) { r = std::string("fail exception ") + e.what(); }
+    return env->NewStringUTF(r.c_str());
+}

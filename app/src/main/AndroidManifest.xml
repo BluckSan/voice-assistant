@@ -52,6 +52,10 @@
         </activity>
 
         <service
+            android:name=".data.accel.GpuProbeService"
+            android:process=":gpuprobe"
+            android:exported="false" />
+        <service
             android:name=".service.AssistantService"
             android:exported="false"
             android:foregroundServiceType="microphone" />

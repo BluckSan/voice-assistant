@@ -187,4 +187,16 @@
     <string name="img2img_files">From files</string>
     <string name="img2img_fast">Fast decoding (TAESD)</string>
     <string name="img2img_fast_hint">Seconds instead of minutes, little RAM; slightly softer details.</string>
+    <string name="accel_title">Acceleration</string>
+    <string name="accel_auto">Auto</string>
+    <string name="accel_vulkan">GPU (Vulkan)</string>
+    <string name="accel_cpu">CPU</string>
+    <string name="accel_hint">Auto runs a small GPU self-test in a separate process and falls back to CPU (remembered) on crash, NaN or black image. CPU uses %1$d threads on big cores.</string>
+    <string name="accel_probing">Testing the GPU…</string>
+    <string name="accel_not_checked">GPU not tested yet (runs on first model use)</string>
+    <string name="accel_probe_result">%1$s: drawing — %2$s, chat — %3$s</string>
+    <string name="accel_ok">works</string>
+    <string name="accel_bad">failed the test</string>
+    <string name="accel_active">Now: drawing — %1$s; chat — %2$s</string>
+    <string name="accel_reprobe">Test again</string>
 </resources>
